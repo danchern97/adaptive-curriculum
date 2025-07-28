@@ -1,0 +1,10 @@
+dataset:
+  name: 'example_dataset'
+  params:
+    path: 'path/to/your/dataset'
+
+model:
+  name: 'example_model'
+  params:
+    input_size: 784
+    output_size: 10 
