@@ -14,8 +14,7 @@ import os
 import random
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import click
 import gridfs
@@ -34,7 +33,7 @@ from torch.distributed import (
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
-from .trace import AStarTrace, DictTokenizer, TokenizedDataset, TokenizedTrace
+from .trace import AStarTrace, DictTokenizer, TokenizedDataset
 from .transformer import (
     EncoderDecoder,
     EncoderDecoderConfig,
@@ -42,121 +41,6 @@ from .transformer import (
     build_optimizer,
 )
 from .utils import mongodb_client, repeat_iterator, setup_logging_ddp
-from .sokoban import SokobanTrace as RawSokobanTrace, WithBoxSokobanTokenizer
-
-
-# -------------------------
-# JSONL dataset (no Mongo)
-# -------------------------
-
-def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
-
-
-class _JsonlTokenizedDataset:
-    """
-    File-backed dataset that mimics the TokenizedDataset API used by AStarTraceIterableDataset,
-    but reads from JSONL files and tokenizes on the fly with WithBoxSokobanTokenizer.
-
-    - train.jsonl -> train set
-    - (val.jsonl + test.jsonl) -> test set (keeps original behavior that test loader
-      reads from a "test" pool)
-    """
-
-    def __init__(self, root: str):
-        self.root = Path(root)
-        assert self.root.exists(), f"JSONL dataset folder not found: {self.root}"
-
-        # Load all split metadata (we tokenize below)
-        self._train_raw = list(_iter_jsonl(self.root / "train.jsonl"))
-        self._val_raw = list(_iter_jsonl(self.root / "val.jsonl"))
-        self._test_raw = list(_iter_jsonl(self.root / "test.jsonl"))
-        self._test_raw = self._val_raw + self._test_raw  # merge val+test for test pool
-
-        # Build tokenizer map per (w,h) and union vocabulary for DictTokenizer
-        dims: set[Tuple[int, int]] = set()
-        for obj in self._train_raw + self._test_raw:
-            spec = obj.get("spec", {})
-            dims.add((int(spec.get("width", 7)), int(spec.get("height", 7))))
-
-        self._tok_by_dim: Dict[Tuple[int, int], WithBoxSokobanTokenizer] = {
-            (w, h): WithBoxSokobanTokenizer(w, h) for (w, h) in sorted(dims)
-        }
-        vocab_union: set[str] = set()
-        for t in self._tok_by_dim.values():
-            # WithBoxSokobanTokenizer inherits Tokenizer, has .vocabulary (set[str])
-            vocab_union |= set(t.vocabulary)
-
-        # public API used by AStarTraceIterableDataset (for JSONL branch)
-        self.vocabulary: List[str] = sorted(vocab_union)
-
-        # Pre-tokenize to compute lengths & accelerate iteration (simple & robust)
-        self._train_tok: List[TokenizedTrace] = []
-        self._test_tok: List[TokenizedTrace] = []
-        self._train_reasoning_len: List[int] = []
-        self._test_reasoning_len: List[int] = []
-
-        def _tokenize_obj(obj: Dict[str, Any], is_test: bool) -> TokenizedTrace:
-            spec = obj.get("spec", {})
-            w, h = int(spec.get("width", 7)), int(spec.get("height", 7))
-            tok = self._tok_by_dim[(w, h)]
-            trace = RawSokobanTrace.from_dict(obj["trace"])
-            return tok.tokenize(trace, is_test=is_test)
-
-        for obj in self._train_raw:
-            tt = _tokenize_obj(obj, is_test=False)
-            self._train_tok.append(tt)
-            self._train_reasoning_len.append(len(tt.reasoning))
-
-        for obj in self._test_raw:
-            tt = _tokenize_obj(obj, is_test=True)
-            self._test_tok.append(tt)
-            self._test_reasoning_len.append(len(tt.reasoning))
-
-        # Expose id lists (indices into the arrays; not the JSONL _id)
-        self.train_ids: List[int] = list(range(len(self._train_tok)))
-        self.test_ids: List[int] = list(range(len(self._test_tok)))
-
-    # Methods mirrored from TokenizedDataset
-    def train_ids_within_range(self, min_len: int, max_len: int) -> List[int]:
-        out: List[int] = []
-        for i, L in enumerate(self._train_reasoning_len):
-            if min_len <= L <= max_len:
-                out.append(i)
-        return out
-
-    def test_ids_within_range(self, min_len: int, max_len: int) -> List[int]:
-        out: List[int] = []
-        for i, L in enumerate(self._test_reasoning_len):
-            if min_len <= L <= max_len:
-                out.append(i)
-        return out
-
-    def _batch(self, seq: List[TokenizedTrace], ids: List[int], batch_size: int) -> Iterator[Iterable[TokenizedTrace]]:
-        for i in range(0, len(ids), batch_size):
-            idxs = ids[i:i + batch_size]
-            yield [seq[j] for j in idxs]
-
-    def train_it(self, ids: List[int], batch_size: int = 1) -> Iterator[Iterable[TokenizedTrace]]:
-        return self._batch(self._train_tok, ids, batch_size)
-
-    def test_it(self, ids: List[int], batch_size: int = 1) -> Iterator[Iterable[TokenizedTrace]]:
-        return self._batch(self._test_tok, ids, batch_size)
-
-
-def _maybe_jsonl_name(name: str) -> Optional[str]:
-    # Accept "jsonl:/abs/or/relative/path"
-    if name.startswith("jsonl:"):
-        path = name.split("jsonl:", 1)[1].strip()
-        return path
-    return None
 
 
 class AStarTraceIterableDataset(IterableDataset):
@@ -170,64 +54,53 @@ class AStarTraceIterableDataset(IterableDataset):
         load_batch_size: int = 10000,
         plan_only: bool = False,
     ):
-        """Constructs an object to load and iterate over training sequences.
-
-        Two modes:
-          1) **Mongo** (default): `name` is a TokenizedDataset name in Mongo.
-          2) **JSONL**: if `name` starts with `jsonl:` then `name[6:]` is a folder
-             containing `train.jsonl`, `val.jsonl`, `test.jsonl`. We tokenize on the fly.
+        """Constructs an object to load and iterate over training sequences
+        stored in MongoDB.
 
         Args:
-            name (str): Dataset name or `jsonl:/path`.
-            num_sequences (Optional[int]): Limit the number of sequences.
-            reasoning_range (Optional[Tuple[int, int]]): Filter by reasoning length.
-            shuffle (bool): Shuffle examples within batches.
-            use_test (bool): If True, use test pool, otherwise train pool.
-            load_batch_size (int): Batch size for underlying loader.
-            plan_only (bool): If True, only include plan tokens; else include reasoning+plan.
+            name (str): Dataset name.
+            num_sequences (Optional[int], optional): Number of sequences to
+                iterate over. If None, iterate over all sequences stored in
+                MongoDB. Defaults to None.
+            reasoning_range (Optional[Tuple[int, int]], optional): Only
+                generate sequences whose `reasoning` sequnece falls into the
+                specified range. If None, do not filter sequences. Defaults
+                to None.
+            shuffle (bool, optional): Randomize iteration order. Defaults
+                to False.
+            use_test (bool, optional): If True, load from test set, otherwise
+                load from training set. Defaults to False.
+            load_batch_size (int, optional): Batch size used for bulk-loading
+                over network from MongoDB. Defaults to 10000.
+            plan_only (bool, optional): If True, only include solution plan
+                and exclude execution trace. If False, include execution trace
+                and plan. Defaults to False.
         """
         self.shuffle = shuffle
         self.use_test = use_test
         self.load_batch_size = load_batch_size
+        self.dataset = TokenizedDataset(name)
+        self.tokenizer = DictTokenizer(self.dataset.vocabulary)
         self.plan_only = plan_only
 
-        jsonl_root = _maybe_jsonl_name(name)
-        if jsonl_root is None:
-            # ---- Original Mongo path ----
-            self.dataset: Any = TokenizedDataset(name)
-            self.tokenizer = DictTokenizer(self.dataset.vocabulary)
-            if not use_test and reasoning_range is None:
-                self.ids = self.dataset.train_ids
-                logging.debug(f"Found {len(self.ids)} train sequence ids.")
-            elif not use_test and reasoning_range is not None:
-                self.ids = self.dataset.train_ids_within_range(*reasoning_range)
-                logging.debug(
-                    f"Found {len(self.ids)} train sequence ids in range {reasoning_range}."
-                )
-            elif use_test and reasoning_range is None:
-                self.ids = self.dataset.test_ids
-                logging.debug(f"Found {len(self.ids)} test sequence ids.")
-            else:
-                self.ids = self.dataset.test_ids_within_range(*reasoning_range)
-                logging.debug(
-                    f"Found {len(self.ids)} test sequence ids in range {reasoning_range}."
-                )
-        else:
-            # ---- JSONL path ----
-            self.dataset = _JsonlTokenizedDataset(jsonl_root)
-            self.tokenizer = DictTokenizer(list(self.dataset.vocabulary))
-            if not use_test and reasoning_range is None:
-                self.ids = self.dataset.train_ids
-                logging.debug(f"[JSONL] Found {len(self.ids)} train ids.")
-            elif not use_test and reasoning_range is not None:
-                self.ids = self.dataset.train_ids_within_range(*reasoning_range)
-                logging.debug(f"[JSONL] Found {len(self.ids)} train ids in range {reasoning_range}.")
-            elif use_test and reasoning_range is None:
-                self.ids = self.dataset.test_ids
-                logging.debug(f"[JSONL] Found {len(self.ids)} test ids.")
-            else:
-                self.ids = self.dataset.test_ids_within_range(*reasoning_range)
-                logging.debug(f"[JSONL] Found {len(self.ids)} test ids in range {reasoning_range}.")
+        if not use_test and reasoning_range is None:
+            self.ids = self.dataset.train_ids
+            logging.debug(f"Found {len(self.ids)} train sequence ids.")
+        elif not use_test and reasoning_range is not None:
+            self.ids = self.dataset.train_ids_within_range(*reasoning_range)
+            logging.debug(
+                f"Found {len(self.ids)} train sequence ids "
+                + f"in range {reasoning_range}."
+            )
+        elif use_test and reasoning_range is None:
+            self.ids = self.dataset.test_ids
+            logging.debug(f"Found {len(self.ids)} test sequence ids.")
+        elif use_test and reasoning_range is not None:
+            self.ids = self.dataset.test_ids_within_range(*reasoning_range)
+            logging.debug(
+                f"Found {len(self.ids)} test sequence ids "
+                + f"in range {reasoning_range}."
+            )
 
         self.ids.sort()
         if num_sequences is not None:
@@ -237,7 +110,7 @@ class AStarTraceIterableDataset(IterableDataset):
 
         rank = get_rank()
         world_size = get_world_size()
-        slice_size = math.ceil(len(self.ids) / max(1, world_size))
+        slice_size = math.ceil(len(self.ids) / world_size)
 
         rank_world_str = f"rank={rank}, world_size={world_size}"
         logging.debug(f"AStarTraceIterableDataset: {rank_world_str}")
@@ -256,7 +129,6 @@ class AStarTraceIterableDataset(IterableDataset):
             batch_loader = self.dataset.train_it(ids_wk, self.load_batch_size)
         else:
             batch_loader = self.dataset.test_it(ids_wk, self.load_batch_size)
-
         for batch in batch_loader:
             tensor_list = self.tokenizer.tokenize_batch(batch, self.plan_only)
             if self.shuffle:
@@ -271,6 +143,16 @@ def pad_and_mask_sequences(
 ) -> Tuple[Tensor, Tensor]:
     """Concatenates a sequence of different length tensors to a padded tensor
     and length mask.
+
+    Args:
+        batch (Sequence[Tensor]): List of 1D tensors.
+        max_seq_len (Optional[int], optional): Length of padded tensor.
+            Defaults to None.
+
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - Padded tensor of shape `[n, l]`.
+            - Length mask of 0 and 1 values.
     """
     if max_seq_len is None:
         seq_len = map(lambda seq: seq.shape[0], batch)
@@ -330,7 +212,15 @@ class BatchedAStarTrace:
 
     @staticmethod
     def from_sequence(batch: Sequence[AStarTrace]) -> "BatchedAStarTrace":
-        """Constructs a batched tensor from a sequence of `AStarTrace` data classes."""
+        """Constructs a batched tensor from a sequence of `AStarTrace`
+        data classes.
+
+        Args:
+            batch (Sequence[AStarTrace]): List of A* trace dataclasses.
+
+        Returns:
+            BatchedAStarTrace: Batched A* trace dataclass.
+        """
         prompt_seq = [b.prompt for b in batch]
         trace_plan_seq = [b.trace_plan for b in batch]
         prompt, prompt_mask = pad_and_mask_sequences(prompt_seq)
@@ -398,6 +288,12 @@ class NextTokenPredictionLoss(nn.Module):
     """
 
     def __init__(self, model: EncoderDecoder):
+        """Constructs loss module.
+
+        Args:
+            model (EncoderDecoder): Encoder-decoder network module that is
+                optimized.
+        """
         super().__init__()
         self.model = model
         self.loss_obj = nn.CrossEntropyLoss(reduction="none")
@@ -546,6 +442,9 @@ def dataframe_from_log_collection(collection: Collection) -> pd.DataFrame:
         if "num_sequences" in res.keys():
             res.pop("num_sequences")
         if "lr" in res.keys():
+            # lr_list = res["lr"]
+            # for i, lr in enumerate(lr_list):
+            #     res[f"lr_{i}"] = lr
             res.pop("lr")
         records.append(res)
     df = pd.DataFrame(records)
@@ -558,6 +457,13 @@ class TrainLogger:
     """Logger class to log training statistics to MongoDB."""
 
     def __init__(self, rank: Optional[int] = None):
+        """Constructs logger object for training logger of a specific rank.
+
+        Args:
+            rank (Optional[int], optional): Rank index raning from `0` to
+                `n-1`, where `n` is the total number of workers.
+                Defaults to None.
+        """
         self._rank = rank
         self._values: Dict[str, float] = {}
         self._count = 0
@@ -726,6 +632,7 @@ class TrainRunData:
         self.client.drop_database("train-db")
 
     def drop(self, run_id: str):
+        # self.db.drop_collection(self.checkpoint_collection(id))
         self.db.drop_collection(self.log_train_collection(run_id))
         self.db.drop_collection(self.log_test_collection(run_id))
         self.config_collection.delete_one({"_id": run_id})
@@ -774,7 +681,11 @@ def _checkpoint_id_valid(checkpoint_id: str) -> bool:
 
 @dataclass
 class Checkpoint:
-    """Dataclass used to hold a checkpoint."""
+    """Dataclass used to hold a checkpoint.
+
+    A checkpoint holds training run ID, a hyper-parameter config dictionary,
+    the model parameters, and optimizer parameters.
+    """
 
     checkpoint_id: str
     step: int
@@ -1196,7 +1107,9 @@ def _drop_run_by_id(run_id: str):
     ckpt_data = CheckpointDataset()
     if ckpt_data.has_checkpoint(run_id):
         ckpt_data.remove(run_id)
-        assert not ckpt_data.has_checkpoint(run_id), "Checkpoint delete did not work."
+        assert not ckpt_data.has_checkpoint(
+            run_id,
+        ), "Checkpoint delete did not work."
     else:
         logging.warning(f"No checkpoint found for {run_id}")
 
@@ -1205,18 +1118,88 @@ def _drop_run_by_id(run_id: str):
 
 
 @main.command()
+@click.option("--run-id", type=str, help="Training run id.")
+def drop_run(run_id: str):
+    """Drop individual training run."""
+    _drop_run_by_id(run_id)
+
+
+@main.command()
+@click.option(
+    "--run-id",
+    type=str,
+    multiple=True,
+    help="Training run id list.",
+)
+@click.option("--jobs", type=int, default=None, help="Number of workers.")
+def bulk_drop_run(run_id: List[str], jobs: int):
+    """Drop multiple training runs."""
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(levelname)s - %(asctime)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    run_id_str = " ".join(run_id)
+    logging.info(f"Bulk dropping of runs with ids: {run_id_str}")
+
+    import multiprocessing as mp
+
+    with mp.Pool(processes=jobs) as p:
+        p.map(_drop_run_by_id, run_id)
+
+
+def _train(run_id: str, **args):
+    """Executes DDP training worker."""
+    init_process_group(backend="nccl", timeout=datetime.timedelta(hours=4))
+    setup_logging_ddp()
+    run_data = TrainRunData()
+    run = TrainRun(TrainConfig.from_args(run_id=run_id, **args))
+    logging.info(f"Run id: {run.config.run_id}")
+    if run.rank == 0:
+        logging.info(f"Args: {args}")
+
+    # To determine if this is the first time the run is launched, check in
+    # every worker if the run already exists. If not, then determine if a
+    # different checkpoint should be used to reconstruct from.
+    run_exists = run_data.run_exists(run.config.run_id)
+    if not run_exists and "start_checkpoint" in args.keys():
+        run.reconstruct_from_checkpoint(args["start_checkpoint"])
+        # Set step to 0 to re-initialize training.
+        run.step = 0
+
+    # After every worker has checked if a different checkpoint should be used
+    # for initialization, add the run into MongoDB if it is new.
+    barrier()
+    if not run_data.run_exists(run.config.run_id) and run.rank == 0:
+        run_data.add_config(run.config)
+
+    barrier()
+    if run.has_checkpoint:
+        run.reconstruct_from_checkpoint()
+    elif run.step == 0:
+        # Only run evaluation and checkpointing at the beginning of training.
+        run.evaluate(run_data)
+        run.checkpoint()
+    logging.info(f"Starting at step {run.step}")
+    run.train(run_data)
+
+    destroy_process_group()
+    logging.info("Done.")
+
+
+@main.command()
 @click.option("--run-id", type=str, help="Run id.")
 @click.option(
     "--train-name",
     type=str,
     default="maze.7-by-7-deterministic.simple",
-    help="Training token dataset name or 'jsonl:/path/to/folder'.",
+    help="Training token dataset name.",
 )
 @click.option(
     "--test-name",
     type=str,
     default="maze.7-by-7-deterministic.simple",
-    help="Test token dataset name or 'jsonl:/path/to/folder'.",
+    help="Test token dataset name.",
 )
 @click.option(
     "--encoder",
@@ -1233,13 +1216,17 @@ def _drop_run_by_id(run_id: str):
 @click.option(
     "--plan-only",
     is_flag=True,
-    help="Train solution-only model. If not used a search-augmented model is trained.",
+    help="""Train solution-only model. If not used a search-augmented model is 
+trained.""",
 )
 @click.option(
     "--batch-size",
     type=int,
     default=16,
-    help="Per-DDP-worker batch size.",
+    help="""Batch size to be used by DDP worker. For example, if `--batch-size=16` 
+is used together with 2 DDP workers (training on 2 GPUs), then the model is 
+trained with a batch-size of 2*16=32.
+""",
 )
 @click.option(
     "--num-train-sequences",
@@ -1271,7 +1258,8 @@ def _drop_run_by_id(run_id: str):
     "--eval-interval",
     type=int,
     default=1000,
-    help="Evaluation and checkpoint interval.",
+    help="""Evaluation and checkpoint interval. Evaluation evaluates the loss 
+statistic on the test set.""",
 )
 @click.option(
     "--min-reasoning-len",
@@ -1283,7 +1271,7 @@ def _drop_run_by_id(run_id: str):
     "--max-reasoning-len",
     type=int,
     default=None,
-    help="Maximum reasoning token trace length.",
+    help="Mazimum reasoning token trace length.",
 )
 @click.option(
     "--start-checkpoint",
@@ -1306,43 +1294,14 @@ def single(run_id: str, **args):
     help="Sweep config file.",
 )
 def sweep(run_id: str, index: int, sweep: str):
-    """Start single DDP training run with provided sweep config file."""
+    """Start single DDP training run with provided sweep config file.
+
+    This launches the run using the hyper-parameter config at the
+    provided index file.
+    """
     with open(sweep, "r") as f:
         sweep_config_list = json.load(f)
     _train(run_id, **sweep_config_list[index])
-
-
-def _train(run_id: str, **args):
-    """Executes DDP training worker."""
-    init_process_group(backend="nccl", timeout=datetime.timedelta(hours=4))
-    setup_logging_ddp()
-    run_data = TrainRunData()
-    run = TrainRun(TrainConfig.from_args(run_id=run_id, **args))
-    logging.info(f"Run id: {run.config.run_id}")
-    if run.rank == 0:
-        logging.info(f"Args: {args}")
-
-    # check for alt checkpoint at first launch
-    run_exists = run_data.run_exists(run.config.run_id)
-    if not run_exists and "start_checkpoint" in args.keys():
-        run.reconstruct_from_checkpoint(args["start_checkpoint"])
-        run.step = 0
-
-    barrier()
-    if not run_data.run_exists(run.config.run_id) and run.rank == 0:
-        run_data.add_config(run.config)
-
-    barrier()
-    if run.has_checkpoint:
-        run.reconstruct_from_checkpoint()
-    elif run.step == 0:
-        run.evaluate(run_data)
-        run.checkpoint()
-    logging.info(f"Starting at step {run.step}")
-    run.train(run_data)
-
-    destroy_process_group()
-    logging.info("Done.")
 
 
 if __name__ == "__main__":
