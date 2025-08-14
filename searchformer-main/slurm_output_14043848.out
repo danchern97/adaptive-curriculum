@@ -1,0 +1,63 @@
+============================================================================================== 
+Warning! Mixing Conda and module environments may lead to corruption of the
+user environment. 
+We do not recommend users mixing those two environments unless absolutely
+necessary. Note that 
+SURF does not provide any support for Conda environment.
+For more information, please refer to our software policy page:
+https://servicedesk.surf.nl/wiki/display/WIKI/Software+policy+Snellius#SoftwarepolicySnellius-UseofAnacondaandMinicondaenvironmentsonSnellius 
+
+Remember that many packages have already been installed on the system and can
+be loaded using 
+the 'module load <package__name>' command. If you are uncertain if a package is
+already available 
+on the system, please use 'module avail' or 'module spider' to search for it.
+============================================================================================== 
+about to fork child process, waiting until server is ready for connections.
+forked process: 1829333
+child process started successfully, parent exiting
+MongoDB is up at mongodb://127.0.0.1:23848/mongo
+INFO - 2025-08-13 11:52:11 - root - Connecting to mongodb://127.0.0.1:23848/mongo
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Starting topology monitoring", "topologyId": {"$oid": "689c604b608834bdfd65082e"}}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Topology description changed", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "previousDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Unknown, servers: []>", "newDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Unknown, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Unknown, rtt: None>]>"}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Starting server monitoring", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:11 - pymongo.connection - {"message": "Connection pool created", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Server heartbeat started", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "driverConnectionId": 1, "serverHost": "127.0.0.1", "serverPort": 23848, "awaited": false}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Server heartbeat succeeded", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "driverConnectionId": 1, "serverConnectionId": 4, "serverHost": "127.0.0.1", "serverPort": 23848, "awaited": false, "durationMS": 10.348235024139285, "reply": "{\"helloOk\": true, \"ismaster\": true, \"topologyVersion\": {\"processId\": {\"$oid\": \"689c6047a40da115b92044ec\"}}, \"maxBsonObjectSize\": 16777216, \"maxMessageSizeBytes\": 48000000, \"maxWriteBatchSize\": 100000, \"localTime\": {\"$date\": \"2025-08-13T09:52:11.214Z\"}, \"logicalSessionTimeoutMinutes\": 30, \"connectionId\": 4, \"maxWireVersion\": 17, \"ok\": 1.0}"}
+DEBUG - 2025-08-13 11:52:11 - pymongo.connection - {"message": "Connection pool ready", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Topology description changed", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "previousDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Unknown, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Unknown, rtt: None>]>", "newDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Single, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Standalone, rtt: 0.010348235024139285>]>"}
+DEBUG - 2025-08-13 11:52:11 - pymongo.topology - {"message": "Server heartbeat started", "topologyId": {"$oid": "689c604b608834bdfd65082e"}, "driverConnectionId": 1, "serverConnectionId": 4, "serverHost": "127.0.0.1", "serverPort": 23848, "awaited": true}
+DEBUG - 2025-08-13 11:52:12 - pymongo.serverSelection - {"message": "Server selection started", "selector": "<function writable_server_selector at 0x14aece3bf5b0>", "operation": "insert", "topologyDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Single, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Standalone, rtt: 0.010348235024139285>]>", "clientId": {"$oid": "689c604b608834bdfd65082e"}}
+DEBUG - 2025-08-13 11:52:12 - pymongo.serverSelection - {"message": "Server selection succeeded", "selector": "<function writable_server_selector at 0x14aece3bf5b0>", "operation": "insert", "topologyDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Single, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Standalone, rtt: 0.010348235024139285>]>", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checkout started", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection created", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection ready", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1, "durationMS": 0.00043810904026031494}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checked out", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1, "durationMS": 0.0010174340568482876}
+DEBUG - 2025-08-13 11:52:12 - pymongo.command - {"message": "Command started", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "command": "{\"insert\": \"sokoban.7-by-7-walls-2-boxes-2.trace\", \"ordered\": true, \"lsid\": {\"id\": {\"$binary\": {\"base64\": \"HaDdooO5RNiz9WGsZSuWYA==\", \"subType\": \"04\"}}}, \"$db\": \"sokobanDB\", \"documents\": [{\"_id\": -9215499512774210260, \"is_test\": true, \"trace\": {\"sokoban_start\": [[\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"], [\"#\", \" \", \" \", \".\", \" \", \"@\", \"#\"], [\"#\", \" \", \"$\", \" \", \" \", \" \", \"#\"], [\"#\", \" \", \" \", \" \", \"#\", \" \", \"#\"], [\"#\", \" \", \"$\", \" \", \" \", \"#\", \"#\"], [\"#\", \".\", \" \", \" \", \" \", \" \", \"#\"], [\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"]], \"trace\": [{\"action\": \"create\", \"state\": {\"state\": [[\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"], [\"#\", \" \", \" \", \".\", \" \", \"@\", \"#\"], [\"#\", \" \", \"$\", \" \", \" \", \" \", \"#\"], [\"#\", \" \", \" \", \" \", \"#\", \" \", \"#\"], [\"#\", \" \", \"$\", \" \", \" \", \"#\", \"#\"], [\"#\", \".\", \" \", \" \", \" \", \" \", \"#\"], [\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"]]}, \"heuristic\": 4.0}, {\"action\": \"close\", \"state\": {\"state\": [[\"#\", \"#\", \"#\", \"#\", \"#\", \"#\", \"#\"], [\"#\", \" \", \" \", \".\", \" \", \"@\", \"#\"], [\"#\", \" \", \"$\", \" \", \" \", \" \", \"...", "commandName": "insert", "databaseName": "sokobanDB", "requestId": 1957747793, "operationId": 1957747793, "driverConnectionId": 1, "serverConnectionId": 6, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.command - {"message": "Command succeeded", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "durationMS": 112.076, "reply": "{\"n\": 1, \"ok\": 1.0}", "commandName": "insert", "databaseName": "sokobanDB", "requestId": 1957747793, "operationId": 1957747793, "driverConnectionId": 1, "serverConnectionId": 6, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checked in", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1}
+DEBUG - 2025-08-13 11:52:12 - pymongo.serverSelection - {"message": "Server selection started", "selector": "<function writable_server_selector at 0x14aece3bf5b0>", "operation": "insert", "topologyDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Single, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Standalone, rtt: 0.010348235024139285>]>", "clientId": {"$oid": "689c604b608834bdfd65082e"}}
+DEBUG - 2025-08-13 11:52:12 - pymongo.serverSelection - {"message": "Server selection succeeded", "selector": "<function writable_server_selector at 0x14aece3bf5b0>", "operation": "insert", "topologyDescription": "<TopologyDescription id: 689c604b608834bdfd65082e, topology_type: Single, servers: [<ServerDescription ('127.0.0.1', 23848) server_type: Standalone, rtt: 0.010348235024139285>]>", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checkout started", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checked out", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1, "durationMS": 7.824902422726154e-05}
+DEBUG - 2025-08-13 11:52:12 - pymongo.command - {"message": "Command started", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "command": "{\"insert\": \"sokoban.7-by-7-walls-2-boxes-2.index\", \"ordered\": true, \"lsid\": {\"id\": {\"$binary\": {\"base64\": \"HaDdooO5RNiz9WGsZSuWYA==\", \"subType\": \"04\"}}}, \"$db\": \"sokobanDB\", \"documents\": [{\"_id\": -9215499512774210260, \"is_test\": true}]}", "commandName": "insert", "databaseName": "sokobanDB", "requestId": 424238335, "operationId": 424238335, "driverConnectionId": 1, "serverConnectionId": 6, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.command - {"message": "Command succeeded", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "durationMS": 75.061, "reply": "{\"n\": 1, \"ok\": 1.0}", "commandName": "insert", "databaseName": "sokobanDB", "requestId": 424238335, "operationId": 424238335, "driverConnectionId": 1, "serverConnectionId": 6, "serverHost": "127.0.0.1", "serverPort": 23848}
+DEBUG - 2025-08-13 11:52:12 - pymongo.connection - {"message": "Connection checked in", "clientId": {"$oid": "689c604b608834bdfd65082e"}, "serverHost": "127.0.0.1", "serverPort": 23848, "driverConnectionId": 1}
+INFO - 2025-08-13 11:52:12 - root - Generated 1 samples.
+INFO - 2025-08-13 11:52:12 - root - Done.
+pygame 2.6.1 (SDL 2.28.4, Python 3.10.18)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+
+JOB STATISTICS
+==============
+Job ID: 14043848
+Cluster: snellius
+User/Group: overven/overven
+State: COMPLETED (exit code 0)
+Nodes: 1
+Cores per node: 9
+CPU Utilized: 00:00:05
+CPU Efficiency: 3.70% of 00:02:15 core-walltime
+Job Wall-clock time: 00:00:15
+Memory Utilized: 3.67 MB
+Memory Efficiency: 0.01% of 60.00 GB (60.00 GB/node)
