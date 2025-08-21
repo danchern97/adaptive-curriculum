@@ -2,107 +2,100 @@
 
 #SBATCH --partition=gpu_mig
 #SBATCH --gpus=1
-#SBATCH --job-name=load_db
+#SBATCH --job-name=restore_db
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=9
-#SBATCH --time=00:30:00
-#SBATCH --output=slurm_outputs/slurm_output_%A.out
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:20:00
+#SBATCH --output=slurm_outputs/slurm_restore_%A.out
+
+# Restore tokenSeqDB collections into a persistent MongoDB at .mongo/db.
+# This starts a local mongod, runs mongorestore on provided archives, then shuts down.
 
 # --- modules / conda ---
 module purge
 module load 2024
 module load Anaconda3/2024.06-1
-source activate searchformer          # make sure this env has: pymongo, click, numpy, pygame (imported)
+source activate searchformer
 
-# --- paths (adjust REPO_DIR if you submit from elsewhere) ---
+# --- paths ---
 REPO_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 cd "$REPO_DIR"
 
-# Your downloaded MongoDB (example path from your message)
 MONGOD="$REPO_DIR/vendor/mongodb-linux-x86_64-rhel80-6.0.14/bin/mongod"
-
 TOOLS_DIR="$REPO_DIR/vendor/mongodb-database-tools/bin"
 export PATH="$TOOLS_DIR:$PATH"
 
-# Your archive locations
-ARCHIVE_VOCAB="$REPO_DIR/sokoban.vocabulary.gz"
-ARCHIVE_MAIN="$REPO_DIR/sokoban.gz"
+# Archives to restore (override via environment if needed)
+ARCHIVE_VOCAB="${ARCHIVE_VOCAB:-$REPO_DIR/sokoban.vocabulary.gz}"
+ARCHIVE_MAIN="${ARCHIVE_MAIN:-$REPO_DIR/sokoban.gz}"
 
-# -------- start a local mongod on fast node-local scratch --------
-DBPATH="${TMPDIR:-/tmp}/mongodb"
+# Persistent DB path (shared storage)
+DBROOT="$REPO_DIR/.mongo"
+DBPATH="$DBROOT/db"
 mkdir -p "$DBPATH"
-PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+
+# Concurrency lock (avoid multiple mongod on same files)
+LOCKDIR="$DBROOT/lock"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    echo "Another job is using $DBROOT. Only one mongod per DB path is allowed."
+    exit 1
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+
+# Port for this job
+PORT=$(( 21000 + (SLURM_JOB_ID % 10000) ))
 
 "$MONGOD" \
-  --dbpath "$DBPATH" \
-  --bind_ip 127.0.0.1 \
-  --port "$PORT" \
-  --wiredTigerCacheSizeGB 1 \
-  --nojournal \
-  --fork \
-  --logpath "${TMPDIR:-/tmp}/mongod.log"
+    --dbpath "$DBPATH" \
+    --bind_ip 127.0.0.1 \
+    --port "$PORT" \
+    --wiredTigerCacheSizeGB 1 \
+    --nojournal \
+    --fork \
+    --logpath "$DBROOT/mongod.log"
 
-# IMPORTANT: do not include a DB name in the URI here.
-# Providing '/mongo' would restrict mongorestore to that DB and skip
-# archived namespaces (e.g., tokenSeqDB, sokobanDB), yielding 0 docs.
 export MONGODB_URI="mongodb://127.0.0.1:${PORT}"
 
-echo "Restoring vocabulary from $ARCHIVE_VOCAB"
-# The token datasets (including vocabulary) live under the tokenSeqDB database
-# in the archives published by Searchformer.
-mongorestore \
-    --uri "$MONGODB_URI" \
-    --gzip \
-    --archive="$ARCHIVE_VOCAB" \
-    --nsInclude "tokenSeqDB.*"
+# Optional: set DROP=1 to replace existing collections when restoring
+DROP="${DROP:-0}"
+DROP_FLAG=()
+if [ "$DROP" = "1" ]; then
+    DROP_FLAG=(--drop)
+fi
 
+set -e
 
-echo "Restoring main data from $ARCHIVE_MAIN"
-mongorestore \
-    --uri "$MONGODB_URI" \
-    --gzip \
-    --archive="$ARCHIVE_MAIN" \
-    --nsInclude "tokenSeqDB.*"
+if [ -f "$ARCHIVE_VOCAB" ]; then
+    echo "Restoring vocabulary archive: $ARCHIVE_VOCAB"
+    mongorestore \
+        --uri "$MONGODB_URI" \
+        --gzip \
+        --archive="$ARCHIVE_VOCAB" \
+        --nsInclude "tokenSeqDB.*" \
+        "${DROP_FLAG[@]}"
+else
+    echo "Vocabulary archive not found: $ARCHIVE_VOCAB (skipping)"
+fi
 
-# (Optional) speed knobs for huge archives:
-#   add: --numInsertionWorkersPerCollection 8 --writeConcern="{w:1}"
+if [ -f "$ARCHIVE_MAIN" ]; then
+    echo "Restoring main archive: $ARCHIVE_MAIN"
+    mongorestore \
+        --uri "$MONGODB_URI" \
+        --gzip \
+        --archive="$ARCHIVE_MAIN" \
+        --nsInclude "tokenSeqDB.*" \
+        "${DROP_FLAG[@]}"
+else
+    echo "Main archive not found: $ARCHIVE_MAIN (skipping)"
+fi
 
-python - <<'PY'
-import os
-from pymongo import MongoClient
-uri=os.environ["MONGODB_URI"]
-c=MongoClient(uri)
-print("DBs:", c.list_database_names())
-# Token datasets restore into 'tokenSeqDB'; Sokoban raw traces (if you
-# generated them yourself) would be in 'sokobanDB'. We list both for clarity.
-token_db=c.get_database("tokenSeqDB")
-print("Collections in tokenSeqDB:", token_db.list_collection_names())
-print("Sample doc count per collection in tokenSeqDB (first 5):")
-for name in token_db.list_collection_names()[:5]:
-    print(" -", name, token_db[name].estimated_document_count())
-
-try:
-    sok_db=c.get_database("sokobanDB")
-    cols=sok_db.list_collection_names()
-    if cols:
-        print("Collections in sokobanDB:", cols)
-        for name in cols[:5]:
-            print(" -", name, sok_db[name].estimated_document_count())
-except Exception:
-    pass
-PY
-
-# -------- now run whatever depends on the data (examples) --------
-# python -m searchformer.train --epochs 1 --batch-size 64
-# python -m searchformer.sokoban tokenize --width 7 --height 7 --num-walls 2 --num-boxes 2
-
-# -------- clean shutdown --------
+# Clean shutdown
 python - <<'PY'
 import os
 from pymongo import MongoClient
 try:
-    MongoClient(os.environ["MONGODB_URI"]).admin.command('shutdown')
+        MongoClient(os.environ["MONGODB_URI"]).admin.command('shutdown')
 except Exception:
-    pass
+        pass
 PY
 pkill -f "mongod.*--port ${PORT}" || true
