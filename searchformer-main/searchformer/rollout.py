@@ -14,11 +14,19 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import click
 import pandas as pd
-import pymongo
-from bson.objectid import ObjectId
-from pymongo import MongoClient
-from pymongo.collection import Collection
-from pymongo.database import Database
+try:
+    import pymongo
+    from bson.objectid import ObjectId
+    from pymongo import MongoClient
+    from pymongo.collection import Collection
+    from pymongo.database import Database
+except ImportError:
+    # Fallback types when pymongo is not available
+    pymongo = None
+    ObjectId = None
+    MongoClient = None
+    Collection = None
+    Database = None
 from torch import Tensor
 
 from .trace import DictTokenizer, TokenizedDataset, TokenizedTrace
@@ -85,7 +93,7 @@ class RolloutMetaData:
 
 
 def _slice_id_from_collection(
-    collection: Collection,
+    collection,
     rank: int = 0,
     world_size: int = 1,
 ) -> List[Any]:
@@ -98,7 +106,7 @@ def _slice_id_from_collection(
 
 
 def _rollout_iterator(
-    collection: Collection,
+    collection,
     ids: List[int],
     load_batch_size: int = 1,
 ) -> Iterator[Rollout]:
@@ -172,11 +180,11 @@ class RolloutDataset:
     params: RolloutParameter
 
     @functools.cached_property
-    def client(self) -> MongoClient:
+    def client(self):
         return mongodb_client()
 
     @functools.cached_property
-    def db(self) -> Database:
+    def db(self):
         return self.client[ROLLOUT_DB_NAME]
 
     @functools.cached_property
@@ -188,11 +196,11 @@ class RolloutDataset:
         return TokenizedDataset(self.params.dataset_name)
 
     @functools.cached_property
-    def rollout_train_collection(self) -> Collection:
+    def rollout_train_collection(self):
         return self.db[f"rollout.{self.id}.train"]
 
     @functools.cached_property
-    def rollout_test_collection(self) -> Collection:
+    def rollout_test_collection(self):
         return self.db[f"rollout.{self.id}.test"]
 
     def has_train_sequence(self, id: int) -> bool:
@@ -304,15 +312,15 @@ class RolloutEvaluationBatch:
 
 class RolloutDataStore:
     @functools.cached_property
-    def client(self) -> MongoClient:
+    def client(self):
         return mongodb_client()
 
     @functools.cached_property
-    def db(self) -> Database:
+    def db(self):
         return self.client[ROLLOUT_DB_NAME]
 
     @functools.cached_property
-    def dataset_collection(self) -> Collection:
+    def dataset_collection(self):
         data_coll = self.db["dataset"]
         uniq_keys = RolloutParameter.unique_keys()
         data_coll.create_index({k: 1 for k in uniq_keys}, unique=True)

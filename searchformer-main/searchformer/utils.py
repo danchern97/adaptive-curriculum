@@ -6,29 +6,48 @@
 #
 import logging
 import os
-from typing import Any, Iterable, Iterator, List, Tuple
+from typing import Any, Iterable, Iterator, List, Tuple, Union
 
 import pandas as pd
 import torch
-from pymongo import MongoClient
+
+from .local_storage import LocalClient
+
+# Try to import MongoDB, fall back to local storage if not available
+try:
+    from pymongo import MongoClient
+    MONGODB_AVAILABLE = True
+except ImportError:
+    MONGODB_AVAILABLE = False
+    MongoClient = type(None)  # Placeholder type
 
 
 def mongodb_client(mongdb_uri: str = "mongodb://localhost:27017/mongo"):
-    """Constructs MongoDB client.
+    """Constructs local storage client by default, or MongoDB client if explicitly requested.
+
+    By default, uses local file storage. To use MongoDB, set environment variable USE_MONGODB=true.
 
     Args:
-        mongdb_uri (str, optional): Defaults to "mongodb://localhost:27017/mongo".
+        mongdb_uri (str, optional): MongoDB URI if using MongoDB. Defaults to "mongodb://localhost:27017/mongo".
 
     Returns:
-        MongoClient: Client used to connect to MongoDB.
+        Client used to connect to local storage or MongoDB.
     """
-    db_uri = os.environ.get("MONGODB_URI", mongdb_uri)
-    logging.info(f"Connecting to {db_uri}")
-    return MongoClient(
-        host=db_uri,
-        socketTimeoutMS=1800000,
-        connectTimeoutMS=1800000,
-    )
+    # Check if we should use MongoDB (opt-in instead of opt-out)
+    use_mongodb = os.environ.get("USE_MONGODB", "false").lower() == "true"
+    
+    if use_mongodb and MONGODB_AVAILABLE:
+        db_uri = os.environ.get("MONGODB_URI", mongdb_uri)
+        logging.info(f"Connecting to {db_uri}")
+        return MongoClient(
+            host=db_uri,
+            socketTimeoutMS=1800000,
+            connectTimeoutMS=1800000,
+        )
+    else:
+        logging.info("Using local file storage")
+        data_path = os.environ.get("LOCAL_DATA_PATH", "data")
+        return LocalClient(data_path)
 
 
 def repeat_iterator(it: Iterable[Any], n: int) -> Iterator[Any]:

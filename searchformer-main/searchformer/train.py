@@ -17,11 +17,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import click
-import gridfs
 import pandas as pd
 import torch
 import torch.nn as nn
-from pymongo.collection import Collection
 from torch import Tensor
 from torch.distributed import (
     barrier,
@@ -41,6 +39,18 @@ from .transformer import (
     build_optimizer,
 )
 from .utils import mongodb_client, repeat_iterator, setup_logging_ddp
+
+# Try to import GridFS, fall back to local implementation
+try:
+    import gridfs
+    from pymongo.collection import Collection
+    GRIDFS_AVAILABLE = True
+except ImportError:
+    GRIDFS_AVAILABLE = False
+    gridfs = None
+    Collection = Any
+
+from .local_gridfs import LocalGridFS, create_local_gridfs
 
 
 class AStarTraceIterableDataset(IterableDataset):
@@ -432,7 +442,7 @@ class TrainConfig:
         )
 
 
-def dataframe_from_log_collection(collection: Collection) -> pd.DataFrame:
+def dataframe_from_log_collection(collection) -> pd.DataFrame:
     records: List[Dict[str, Any]] = []
     for res in collection.find():
         res["timestamp"] = res["_id"].generation_time
@@ -562,7 +572,7 @@ class TrainRunData:
         self.db = self.client["trainDB"]
 
     @functools.cached_property
-    def config_collection(self) -> Collection:
+    def config_collection(self):
         return self.db["config"]
 
     def drop_configs(self):
@@ -598,10 +608,10 @@ class TrainRunData:
             )  # type: ignore
         return configs
 
-    def log_train_collection(self, run_id: str) -> Collection:
+    def log_train_collection(self, run_id: str):
         return self.db[f"log.{run_id}.train"]
 
-    def log_test_collection(self, run_id: str) -> Collection:
+    def log_test_collection(self, run_id: str):
         return self.db[f"log.{run_id}.test"]
 
     def log_train(self, run_id: str, log_dict: Dict[str, Any]):
@@ -742,29 +752,68 @@ CHECKPOINT_DB_NAME = "ckptDB"
 
 
 class CheckpointDataset:
-    """Class to write and load checkpoints from MonogDB."""
+    """Class to write and load checkpoints from MongoDB or local storage."""
 
     def __init__(self):
         self.client = mongodb_client()
         self.db = self.client[CHECKPOINT_DB_NAME]
 
-    def get_fs(self, checkpoint_id: str) -> gridfs.GridFS:
+    def get_fs(self, checkpoint_id: str):
         assert _checkpoint_id_valid(checkpoint_id)
-        return gridfs.GridFS(self.db, collection=f"fs.{checkpoint_id}")
+        
+        # Check if we're using local storage
+        if hasattr(self.client, 'storage'):
+            # Local storage case
+            return create_local_gridfs(self.client.storage, f"fs.{checkpoint_id}")
+        else:
+            # MongoDB case
+            return gridfs.GridFS(self.db, collection=f"fs.{checkpoint_id}")
 
     def list_checkpoint_id(self) -> List[str]:
-        coll_names = self.db.list_collection_names()
-        coll_names_files = filter(lambda s: s.endswith("files"), coll_names)
-        ckpt_id_it = map(lambda s: s.split(".")[1], coll_names_files)
-        return list(ckpt_id_it)
+        if hasattr(self.client, 'storage'):
+            # Local storage case
+            ckpt_path = self.client.storage.base_path / CHECKPOINT_DB_NAME
+            if not ckpt_path.exists():
+                return []
+            
+            checkpoint_ids = []
+            for item in ckpt_path.iterdir():
+                if item.is_dir() and item.name.startswith("fs."):
+                    checkpoint_id = item.name.split(".", 1)[1]
+                    checkpoint_ids.append(checkpoint_id)
+            return checkpoint_ids
+        else:
+            # MongoDB case
+            coll_names = self.db.list_collection_names()
+            coll_names_files = filter(lambda s: s.endswith("files"), coll_names)
+            ckpt_id_it = map(lambda s: s.split(".")[1], coll_names_files)
+            return list(ckpt_id_it)
 
     def drop(self, checkpoint_id: str):
         assert _checkpoint_id_valid(checkpoint_id)
-        self.db.drop_collection(f"fs.{checkpoint_id}.files")
-        self.db.drop_collection(f"fs.{checkpoint_id}.chunks")
+        
+        if hasattr(self.client, 'storage'):
+            # Local storage case
+            ckpt_path = self.client.storage.base_path / CHECKPOINT_DB_NAME / f"fs.{checkpoint_id}"
+            if ckpt_path.exists():
+                import shutil
+                shutil.rmtree(ckpt_path)
+        else:
+            # MongoDB case
+            self.db.drop_collection(f"fs.{checkpoint_id}.files")
+            self.db.drop_collection(f"fs.{checkpoint_id}.chunks")
 
     def drop_all(self):
-        self.client.drop_database(CHECKPOINT_DB_NAME)
+        if hasattr(self.client, 'storage'):
+            # Local storage case
+            ckpt_path = self.client.storage.base_path / CHECKPOINT_DB_NAME
+            if ckpt_path.exists():
+                import shutil
+                shutil.rmtree(ckpt_path)
+                ckpt_path.mkdir(exist_ok=True)
+        else:
+            # MongoDB case
+            self.client.drop_database(CHECKPOINT_DB_NAME)
 
     def add(self, ckpt: Checkpoint):
         buffer = ckpt.to_buffer()

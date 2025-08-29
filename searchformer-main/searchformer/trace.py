@@ -12,11 +12,19 @@ from typing import Any, Dict, Iterable, Iterator, List, Sequence, Set
 
 import click
 import pandas as pd
-import pymongo
-from pymongo.collection import Collection
 from torch import Tensor
 
 from .utils import mongodb_client
+
+# Try to import MongoDB specific modules
+try:
+    import pymongo
+    from pymongo.collection import Collection
+    MONGODB_AVAILABLE = True
+except ImportError:
+    MONGODB_AVAILABLE = False
+    pymongo = None
+    Collection = Any  # Use Any as placeholder type
 
 
 @dataclass
@@ -124,7 +132,7 @@ class Tokenizer:
 
 
 def _tok_seq_iterator(
-    collection: Collection, ids: List[int], batch_size: int = 1
+    collection, ids: List[int], batch_size: int = 1
 ) -> Iterator[Iterable[TokenizedTrace]]:
     logging.debug(f"Iterating over {len(ids)} ids.")
     for i in range(0, len(ids), batch_size):
@@ -133,7 +141,7 @@ def _tok_seq_iterator(
         yield list(trace_it)
 
 
-def _load_ids(collection: Collection) -> List[Any]:
+def _load_ids(collection) -> List[Any]:
     logging.debug(f"Loading all ids from {collection} ...")
     id_list = [d["_id"] for d in collection.find({}, {"_id": 1})]
     logging.debug("Finished loading.")
@@ -141,7 +149,7 @@ def _load_ids(collection: Collection) -> List[Any]:
 
 
 def _load_ids_within_reasoning_len_range(
-    trace_meta_collection: Collection, min_len: int, max_len: int
+    trace_meta_collection, min_len: int, max_len: int
 ) -> List[Any]:
     """Loads all ids from the provided trace meta data collection and filters
     them by the `reasoning_len` field.
@@ -166,11 +174,11 @@ def _load_ids_within_reasoning_len_range(
     return [r["_id"] for r in res_it]
 
 
-def max_seq_len_from_collection(collection: Collection) -> Dict[str, Any]:
+def max_seq_len_from_collection(collection) -> Dict[str, Any]:
     """Returns prompt, reasoning, and plan sequence lengths.
 
     Args:
-        collection (Collection): Collection containing `TokenizedTrace`
+        collection: Collection containing `TokenizedTrace`
             documents.
 
     Returns:
@@ -224,7 +232,7 @@ class TokenizedDataset:
         self.db = self.client[TOK_TRACE_DB_NAME]
 
     @functools.cached_property
-    def vocabulary_collection(self) -> Collection:
+    def vocabulary_collection(self):
         return self.db["vocabulary"]
 
     def exists(self) -> bool:
@@ -236,10 +244,14 @@ class TokenizedDataset:
             self.vocabulary_collection.insert_one(
                 {"_id": self.name, "vocabulary": list(set(vocabulary))}
             )
-        except pymongo.errors.DuplicateKeyError:
-            logging.warning(
-                f"Cannot set vocabulary for existing dataset {self.name}",
-            )
+        except (ValueError, Exception) as e:
+            # Handle both local storage ValueError and pymongo DuplicateKeyError
+            if "already exists" in str(e) or (pymongo and isinstance(e, pymongo.errors.DuplicateKeyError)):
+                logging.warning(
+                    f"Cannot set vocabulary for existing dataset {self.name}",
+                )
+            else:
+                raise
 
     @property
     def vocabulary(self) -> List[str]:
@@ -254,7 +266,7 @@ class TokenizedDataset:
         return res["vocabulary"]
 
     @functools.cached_property
-    def log_collection(self) -> Collection:
+    def log_collection(self):
         return self.db[f"{self.name}.log"]
 
     def claim_id(self, id: int) -> bool:
@@ -269,11 +281,15 @@ class TokenizedDataset:
         """
         try:
             self.log_collection.insert_one({"_id": id, "state": "incomplete"})
-        except pymongo.errors.DuplicateKeyError:
-            res = self.log_collection.find_one({"_id": id})
-            assert type(res) is dict
-            if res.get("state", "incomplete") == "complete":
-                return False
+        except (ValueError, Exception) as e:
+            # Handle both local storage ValueError and pymongo DuplicateKeyError
+            if "already exists" in str(e) or (pymongo and isinstance(e, pymongo.errors.DuplicateKeyError)):
+                res = self.log_collection.find_one({"_id": id})
+                assert type(res) is dict
+                if res.get("state", "incomplete") == "complete":
+                    return False
+            else:
+                raise
         return True
 
     def finish_id(self, id: int):
@@ -282,19 +298,19 @@ class TokenizedDataset:
         )
 
     @functools.cached_property
-    def train_seq_collection(self) -> Collection:
+    def train_seq_collection(self):
         return self.db[f"{self.name}.seq.train"]
 
     @functools.cached_property
-    def test_seq_collection(self) -> Collection:
+    def test_seq_collection(self):
         return self.db[f"{self.name}.seq.test"]
 
     @functools.cached_property
-    def train_meta_collection(self) -> Collection:
+    def train_meta_collection(self):
         return self.db[f"{self.name}.meta.train"]
 
     @functools.cached_property
-    def test_meta_collection(self) -> Collection:
+    def test_meta_collection(self):
         return self.db[f"{self.name}.meta.test"]
 
     def add_train_trace(self, trace: TokenizedTrace):
