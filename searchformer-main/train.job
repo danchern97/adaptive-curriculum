@@ -1,0 +1,144 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --job-name=load_db
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=00:30:00
+#SBATCH --output=slurm_outputs/slurm_output_%A.out
+
+# --- modules / conda ---
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+source activate searchformer          # make sure this env has: pymongo, click, numpy, pygame (imported)
+
+# --- paths (adjust REPO_DIR if you submit from elsewhere) ---
+REPO_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+cd "$REPO_DIR"
+
+# Your downloaded MongoDB (example path from your message)
+MONGOD="$REPO_DIR/vendor/mongodb-linux-x86_64-rhel80-6.0.14/bin/mongod"
+
+# -------- start a local mongod on a persistent path (shared storage) --------
+# Use a persistent folder in the repo so we don't have to restore every run.
+DBROOT="$REPO_DIR/.mongo"
+DBPATH="$DBROOT/db"
+mkdir -p "$DBPATH"
+
+# Prevent concurrent use of the same DB files across jobs/nodes.
+LOCKDIR="$DBROOT/lock"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    echo "Another job is using $DBROOT. Only one mongod per DB path is allowed."
+    exit 1
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+
+# Choose a per-job port; DB files persist regardless of port.
+PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+
+"$MONGOD" \
+    --dbpath "$DBPATH" \
+    --bind_ip 127.0.0.1 \
+    --port "$PORT" \
+    --wiredTigerCacheSizeGB 1 \
+    --nojournal \
+    --fork \
+    --logpath "$DBROOT/mongod.log"
+
+# IMPORTANT: do not include a DB name in the URI here.
+# Providing '/mongo' would restrict mongorestore to that DB and skip
+# archived namespaces (e.g., tokenSeqDB, sokobanDB), yielding 0 docs.
+export MONGODB_URI="mongodb://127.0.0.1:${PORT}"
+
+# Datasets to expect in the DB (train uses .improved; test uses base dataset)
+export DATASET_TRAIN="sokoban.7-by-7-walls-2-boxes-2.with-box-40k"
+export DATASET_TEST="sokoban.7-by-7-walls-2-boxes-2.with-box-40k"
+
+
+# Ensure the vocabulary doc exists for the train dataset id. If it's missing
+# but exists for the base dataset, copy it so training uses the persisted vocab.
+export VOCAB_SOURCE_ID="${VOCAB_SOURCE_ID:-$DATASET_TEST}"
+python - <<'PY'
+import os
+from pymongo import MongoClient
+uri=os.environ["MONGODB_URI"]
+train=os.environ.get("DATASET_TRAIN")
+source=os.environ.get("VOCAB_SOURCE_ID")
+base_test=os.environ.get("DATASET_TEST")
+client=MongoClient(uri)
+db=client["tokenSeqDB"]
+train_doc=db["vocabulary"].find_one({"_id": train})
+if train_doc is None:
+    src_doc=db["vocabulary"].find_one({"_id": source})
+    if src_doc and isinstance(src_doc.get("vocabulary"), list) and src_doc["vocabulary"]:
+        db["vocabulary"].update_one(
+            {"_id": train},
+            {"$set": {"vocabulary": src_doc["vocabulary"]}},
+            upsert=True,
+        )
+        print(f"Copied vocabulary from {source} to {train} (size={len(src_doc['vocabulary'])}).")
+    else:
+        print(f"No source vocabulary found for {source}; constructing from sequences ...")
+        fields=("prompt","reasoning","plan")
+        tokens=set()
+        # Scan train (often .improved) and base test dataset if present
+        scan_names=[n for n in {train, base_test} if n]
+        for name in scan_names:
+            for split in ("train","test"):
+                coll_name=f"{name}.seq.{split}"
+                coll=db[coll_name]
+                if coll.estimated_document_count()==0:
+                    continue
+                print(f"Scanning {coll_name} ...")
+                cursor=coll.find({}, {f:1 for f in fields})
+                for doc in cursor:
+                    for f in fields:
+                        seq=doc.get(f)
+                        if isinstance(seq, list):
+                            tokens.update(seq)
+        if tokens:
+            vocab=sorted(tokens)
+            db["vocabulary"].update_one(
+                {"_id": train},
+                {"$set": {"vocabulary": vocab}},
+                upsert=True,
+            )
+            print(f"Constructed vocabulary for {train}; size={len(vocab)}")
+        else:
+            print(f"Could not construct vocabulary; no tokens found in sources {scan_names}.")
+else:
+    print(f"Vocabulary already present for {train}.")
+PY
+
+# -------- now run whatever depends on the data (examples) --------
+# Train Searchformer on the restored Sokoban token dataset (single GPU)
+# Dataset name is derived from the archive contents:
+#   tokenSeqDB.sokoban.7-by-7-walls-2-boxes-2.with-box-40k.*
+# We use a unique RUN_ID per Slurm job. It must match ^[A-Za-z0-9_-]*$
+# Sanitize dataset name into checkpoint-safe form (replace non-allowed chars with '-')
+RUN_ID_BASE=$(echo "$DATASET_TEST" | sed 's/[^A-Za-z0-9_-]/-/g')
+RUN_ID="${RUN_ID_BASE}-${SLURM_JOB_ID}"
+
+torchrun \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=localhost:0 \
+    --nnodes=1 \
+    --nproc-per-node=1 \
+    --module searchformer.train \
+    sweep \
+    --run-id "$RUN_ID" \
+    --index 0 \
+    --sweep "$REPO_DIR/config/sweep/sokoban-7722-m-trace-plan-100k.json"
+
+# -------- clean shutdown --------
+python - <<'PY'
+import os
+from pymongo import MongoClient
+try:
+    MongoClient(os.environ["MONGODB_URI"]).admin.command('shutdown')
+except Exception:
+    pass
+PY
+pkill -f "mongod.*--port ${PORT}" || true
