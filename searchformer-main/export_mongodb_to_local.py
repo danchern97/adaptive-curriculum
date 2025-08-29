@@ -93,23 +93,35 @@ def export_mongodb_to_local_storage(output_dir: str, mongodb_uri: str = "mongodb
                 if doc_count == 0:
                     continue
                 
-                # Export documents in batches
-                batch_size = 1000
-                exported_count = 0
+                # Export documents efficiently using streaming bulk insert
+                def document_iterator():
+                    for doc in mongo_collection.find():
+                        yield doc
                 
-                for doc in mongo_collection.find():
-                    try:
-                        local_collection.insert_one(doc)
-                        exported_count += 1
-                        total_exported += 1
+                try:
+                    result = local_collection.bulk_insert_streaming(document_iterator(), batch_size=10000)
+                    exported_count = len(result.inserted_ids)
+                    total_exported += exported_count
+                    print(f"      ✅ Exported {exported_count} documents from {collection_name}")
+                
+                except Exception as e:
+                    print(f"      ❌ Failed to export collection {collection_name}: {e}")
+                    # Fallback to individual inserts if bulk fails
+                    print(f"      🔄 Falling back to individual inserts...")
+                    exported_count = 0
+                    for doc in mongo_collection.find():
+                        try:
+                            local_collection.insert_one(doc)
+                            exported_count += 1
+                            total_exported += 1
+                            
+                            if exported_count % 1000 == 0:
+                                print(f"      📈 Exported {exported_count}/{doc_count} documents...")
                         
-                        if exported_count % batch_size == 0:
-                            print(f"      📈 Exported {exported_count}/{doc_count} documents...")
+                        except Exception as e:
+                            print(f"      ⚠️ Failed to export document {doc.get('_id', 'unknown')}: {e}")
                     
-                    except Exception as e:
-                        print(f"      ⚠️ Failed to export document {doc.get('_id', 'unknown')}: {e}")
-                
-                print(f"      ✅ Exported {exported_count} documents from {collection_name}")
+                    print(f"      ✅ Exported {exported_count} documents from {collection_name} (fallback mode)")
         
         print(f"\n🎉 Export complete!")
         print(f"📊 Total documents exported: {total_exported}")

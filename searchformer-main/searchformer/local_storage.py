@@ -46,45 +46,49 @@ class LocalStorage:
 
 
 class LocalCollection:
-    """Local file-based collection that mimics MongoDB Collection interface."""
+    """Local file-based collection that stores all documents in a single JSON file."""
     
     def __init__(self, storage: LocalStorage, db_name: str, collection_name: str):
         self.storage = storage
         self.db_name = db_name
         self.collection_name = collection_name
-        self.path = storage.get_collection_path(db_name, collection_name)
+        self.collection_file = storage.base_path / db_name / f"{collection_name}.json"
+        self.collection_file.parent.mkdir(parents=True, exist_ok=True)
         
-        # Load existing documents
-        self._load_documents()
+        # For read operations, we'll load documents on demand
+        self._documents_cache = None
+        self._cache_dirty = False
     
-    def _load_documents(self) -> None:
-        """Load all documents from files."""
-        self.documents = {}
-        if self.path.exists():
-            for doc_file in self.path.glob("*.json"):
-                try:
-                    with open(doc_file, 'r') as f:
-                        doc = json.load(f)
-                        self.documents[doc["_id"]] = doc
-                except (json.JSONDecodeError, KeyError):
-                    # Skip corrupted files
-                    continue
+    def _load_documents(self):
+        """Load all documents from the collection file."""
+        if self._documents_cache is not None and not self._cache_dirty:
+            return self._documents_cache
+            
+        if self.collection_file.exists():
+            try:
+                with open(self.collection_file, 'r') as f:
+                    self._documents_cache = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                self._documents_cache = {}
+        else:
+            self._documents_cache = {}
+        
+        self._cache_dirty = False
+        return self._documents_cache
     
-    def _save_document(self, doc: Dict) -> None:
-        """Save a document to file."""
-        doc_id = doc["_id"]
-        doc_file = self.path / f"{doc_id}.json"
-        with open(doc_file, 'w') as f:
-            json.dump(doc, f, indent=2)
-        self.documents[doc_id] = doc
+    @property
+    def documents(self):
+        """Lazy load documents."""
+        return self._load_documents()
     
-    def _delete_document(self, doc_id: str) -> None:
-        """Delete a document file."""
-        doc_file = self.path / f"{doc_id}.json"
-        if doc_file.exists():
-            doc_file.unlink()
-        if doc_id in self.documents:
-            del self.documents[doc_id]
+    def _save_documents(self):
+        """Save all documents to the collection file."""
+        if self._documents_cache is None:
+            return
+            
+        with open(self.collection_file, 'w') as f:
+            json.dump(self._documents_cache, f, separators=(',', ':'))  # Compact format to save space
+        self._cache_dirty = False
     
     def _generate_id(self) -> str:
         """Generate a unique document ID."""
@@ -110,24 +114,73 @@ class LocalCollection:
         if "_id" not in doc:
             doc["_id"] = self._generate_id()
         
-        self._save_document(doc)
+        self.documents[str(doc["_id"])] = doc
+        self._cache_dirty = True
+        self._save_documents()
         return InsertResult(doc["_id"])
     
     def insert_many(self, documents: List[Dict]) -> 'InsertManyResult':
-        """Insert multiple documents."""
+        """Insert multiple documents efficiently."""
         inserted_ids = []
         for doc in documents:
-            result = self.insert_one(doc)
-            inserted_ids.append(result.inserted_id)
+            doc = doc.copy()
+            if "_id" not in doc:
+                doc["_id"] = self._generate_id()
+            self.documents[str(doc["_id"])] = doc
+            inserted_ids.append(doc["_id"])
+        
+        self._cache_dirty = True
+        self._save_documents()
+        return InsertManyResult(inserted_ids)
+    
+    def bulk_insert_streaming(self, documents: Iterator[Dict], batch_size: int = 10000) -> 'InsertManyResult':
+        """
+        Efficiently insert many documents in batches without loading everything into memory.
+        This is optimized for the export process.
+        """
+        inserted_ids = []
+        batch = []
+        
+        # Start with empty collection for bulk insert
+        if not self.collection_file.exists():
+            self._documents_cache = {}
+            self._cache_dirty = True
+        
+        for doc in documents:
+            doc = doc.copy()
+            if "_id" not in doc:
+                doc["_id"] = self._generate_id()
+            
+            batch.append(doc)
+            inserted_ids.append(doc["_id"])
+            
+            # Write in batches to manage memory
+            if len(batch) >= batch_size:
+                for batch_doc in batch:
+                    self.documents[str(batch_doc["_id"])] = batch_doc
+                self._cache_dirty = True
+                self._save_documents()
+                batch = []
+                print(f"      📈 Batch saved: {len(inserted_ids)} documents so far...")
+        
+        # Write remaining documents
+        if batch:
+            for batch_doc in batch:
+                self.documents[str(batch_doc["_id"])] = batch_doc
+            self._cache_dirty = True
+            self._save_documents()
+        
         return InsertManyResult(inserted_ids)
     
     def update_one(self, filter_dict: Dict, update: Dict) -> 'UpdateResult':
         """Update one document matching the filter."""
         for doc in self.documents.values():
             if self._matches_filter(doc, filter_dict):
-                self._apply_update(doc, update)
-                self._save_document(doc)
-                return UpdateResult(1, 1)
+                if self._apply_update(doc, update):
+                    self._cache_dirty = True
+                    self._save_documents()
+                    return UpdateResult(1, 1)
+                return UpdateResult(1, 0)
         return UpdateResult(0, 0)
     
     def update_many(self, filter_dict: Dict, update: Dict) -> 'UpdateResult':
@@ -139,31 +192,40 @@ class LocalCollection:
                 matched += 1
                 if self._apply_update(doc, update):
                     modified += 1
-                    self._save_document(doc)
+        
+        if modified > 0:
+            self._cache_dirty = True
+            self._save_documents()
         return UpdateResult(matched, modified)
     
     def delete_one(self, filter_dict: Dict) -> 'DeleteResult':
         """Delete one document matching the filter."""
-        for doc in self.documents.values():
+        for doc_id, doc in list(self.documents.items()):
             if self._matches_filter(doc, filter_dict):
-                self._delete_document(doc["_id"])
+                del self.documents[doc_id]
+                self._cache_dirty = True
+                self._save_documents()
                 return DeleteResult(1)
         return DeleteResult(0)
     
     def delete_many(self, filter_dict: Dict) -> 'DeleteResult':
         """Delete all documents matching the filter."""
-        to_delete = []
-        for doc in self.documents.values():
+        deleted_count = 0
+        for doc_id, doc in list(self.documents.items()):
             if self._matches_filter(doc, filter_dict):
-                to_delete.append(doc["_id"])
+                del self.documents[doc_id]
+                deleted_count += 1
         
-        for doc_id in to_delete:
-            self._delete_document(doc_id)
-        
-        return DeleteResult(len(to_delete))
+        if deleted_count > 0:
+            self._cache_dirty = True
+            self._save_documents()
+        return DeleteResult(deleted_count)
     
     def count_documents(self, filter_dict: Optional[Dict] = None) -> int:
         """Count documents matching the filter."""
+        if filter_dict is None or filter_dict == {}:
+            return len(self.documents)
+        
         return sum(1 for _ in self.find(filter_dict))
     
     def distinct(self, field: str, filter_dict: Optional[Dict] = None) -> List[Any]:
