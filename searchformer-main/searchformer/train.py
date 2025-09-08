@@ -42,8 +42,8 @@ from .utils import mongodb_client, repeat_iterator, setup_logging_ddp
 
 # Try to import GridFS, fall back to local implementation
 try:
-    import gridfs
-    from pymongo.collection import Collection
+    import gridfs  # type: ignore
+    from pymongo.collection import Collection  # type: ignore
     GRIDFS_AVAILABLE = True
 except ImportError:
     GRIDFS_AVAILABLE = False
@@ -445,8 +445,16 @@ class TrainConfig:
 def dataframe_from_log_collection(collection) -> pd.DataFrame:
     records: List[Dict[str, Any]] = []
     for res in collection.find():
-        res["timestamp"] = res["_id"].generation_time
-        res.pop("_id")
+        _id = res.get("_id")
+        ts = None
+        try:
+            ts = getattr(_id, "generation_time", None)
+        except Exception:
+            ts = None
+        if ts is None:
+            ts = datetime.datetime.utcnow()
+        res["timestamp"] = ts
+        res.pop("_id", None)
         if "rank" in res.keys():
             res.pop("rank")
         if "num_sequences" in res.keys():
@@ -511,8 +519,18 @@ class TrainLogger:
 
 
 def _id_to_ts(d: Dict[str, Any]) -> Dict[str, Any]:
-    d["_ts"] = d["_id"].generation_time
-    d.pop("_id")
+    # Support both Mongo ObjectId and simple string UUIDs from local storage
+    _id = d.get("_id")
+    ts = None
+    try:
+        ts = getattr(_id, "generation_time", None)
+    except Exception:
+        ts = None
+    if ts is None:
+        # Fallback: use current UTC time for ordering in local mode
+        ts = datetime.datetime.utcnow()
+    d["_ts"] = ts
+    d.pop("_id", None)
     return d
 
 
@@ -570,6 +588,33 @@ class TrainRunData:
     def __init__(self):
         self.client = mongodb_client()
         self.db = self.client["trainDB"]
+        # Local JSONL logs directory (works for both local and Mongo modes)
+        self._logs_dir = os.path.join(os.environ.get("LOCAL_DATA_PATH", "."), "logs")
+        os.makedirs(self._logs_dir, exist_ok=True)
+
+    def _echo_metrics(self, split: str, log_dict: Dict[str, Any]):
+        """Print compact numeric metrics to stdout for quick monitoring.
+
+        This keeps the original logging to the backing store intact and simply
+        adds a human-friendly console line like: "train@1000: loss=..., accuracy.plan=...".
+        """
+        try:
+            meta = log_dict.get("meta", {}) if isinstance(log_dict.get("meta"), dict) else {}
+            step = meta.get("step", "?")
+            values = log_dict.get("value", {})
+            if isinstance(values, dict):
+                # Flatten only numeric scalars; skip dicts like lr schedules
+                numeric_items = []
+                for k, v in values.items():
+                    if isinstance(v, (int, float)):
+                        numeric_items.append((k, v))
+                if numeric_items:
+                    numeric_items.sort(key=lambda x: x[0])
+                    kv = ", ".join(f"{k}={v:.4g}" for k, v in numeric_items)
+                    logging.info(f"{split}@{step}: {kv}")
+        except Exception:
+            # Never let logging side-effects break training
+            pass
 
     @functools.cached_property
     def config_collection(self):
@@ -616,9 +661,27 @@ class TrainRunData:
 
     def log_train(self, run_id: str, log_dict: Dict[str, Any]):
         self.log_train_collection(run_id).insert_one(log_dict)
+        # Echo to console for local-only workflows
+        self._echo_metrics("train", log_dict)
+        # Also append to local JSONL for easy external plotting
+        try:
+            fn = os.path.join(self._logs_dir, f"{run_id}.train.jsonl")
+            with open(fn, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def log_test(self, run_id: str, log_dict: Dict[str, Any]):
         self.log_test_collection(run_id).insert_one(log_dict)
+        # Echo to console for local-only workflows
+        self._echo_metrics("test", log_dict)
+        # Also append to local JSONL for easy external plotting
+        try:
+            fn = os.path.join(self._logs_dir, f"{run_id}.test.jsonl")
+            with open(fn, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def get_train_log(self, run_id: str) -> Optional[pd.DataFrame]:
         coll = self.log_train_collection(run_id)
