@@ -12,6 +12,6 @@ module purge
 module load 2023
 module load Anaconda3/2023.07-2
 source activate grpo
-export WANDB_API_KEY="080328fcb5d15ead00b0683ee4cf3430bfc48773"
+export WANDB_API_KEY="your_api_key_here"
 
 srun python train.py
