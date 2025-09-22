@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#SBATCH --job-name=train_grpo
+#SBATCH --partition=gpu_h100        
+#SBATCH --gpus=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=05:00:00
+#SBATCH --output=slurm_outputs/train_output_%j.out
+
+module purge
+module load 2023
+module load Anaconda3/2023.07-2
+source activate grpo
+export WANDB_API_KEY="080328fcb5d15ead00b0683ee4cf3430bfc48773"
+
+srun python train.py
