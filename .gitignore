@@ -1,0 +1,3 @@
+*.gz
+/searchformer-main/searchformer/transformer/__pycache__
+/searchformer-main/searchformer/__pycache__
