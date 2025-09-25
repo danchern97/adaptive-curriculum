@@ -1,0 +1,45 @@
+============================================================================================== 
+Warning! Mixing Conda and module environments may lead to corruption of the
+user environment. 
+We do not recommend users mixing those two environments unless absolutely
+necessary. Note that 
+SURF does not provide any support for Conda environment.
+For more information, please refer to our software policy page:
+https://servicedesk.surf.nl/wiki/display/WIKI/Software+policy+Snellius#SoftwarepolicySnellius-UseofAnacondaandMinicondaenvironmentsonSnellius 
+
+Remember that many packages have already been installed on the system and can
+be loaded using 
+the 'module load <package__name>' command. If you are uncertain if a package is
+already available 
+on the system, please use 'module avail' or 'module spider' to search for it.
+============================================================================================== 
+about to fork child process, waiting until server is ready for connections.
+forked process: 1847199
+child process started successfully, parent exiting
+Restoring vocabulary from /gpfs/home2/overven/adaptive-curriculum/searchformer-main/sokoban.vocabulary.gz
+2025-08-13T12:32:22.730+0200	The --db and --collection flags are deprecated for this use-case; please use --nsInclude instead, i.e. with --nsInclude=${DATABASE}.${COLLECTION}
+2025-08-13T12:32:22.738+0200	preparing collections to restore from
+2025-08-13T12:32:22.742+0200	0 document(s) restored successfully. 0 document(s) failed to restore.
+Restoring main data from /gpfs/home2/overven/adaptive-curriculum/searchformer-main/sokoban.gz
+2025-08-13T12:32:22.755+0200	The --db and --collection flags are deprecated for this use-case; please use --nsInclude instead, i.e. with --nsInclude=${DATABASE}.${COLLECTION}
+2025-08-13T12:32:22.764+0200	setting number of parallel collections to number of parallel collections in archive (40)
+2025-08-13T12:32:22.766+0200	preparing collections to restore from
+2025-08-13T12:33:00.934+0200	0 document(s) restored successfully. 0 document(s) failed to restore.
+DBs: ['admin', 'config', 'local']
+Collections in sokobanDB: []
+Sample doc count per collection (first 5):
+
+JOB STATISTICS
+==============
+Job ID: 14044451
+Cluster: snellius
+User/Group: overven/overven
+State: RUNNING
+Nodes: 1
+Cores per node: 9
+CPU Utilized: 00:00:00
+CPU Efficiency: 0.00% of 00:07:03 core-walltime
+Job Wall-clock time: 00:00:47
+Memory Utilized: 0.00 MB
+Memory Efficiency: 0.00% of 60.00 GB (60.00 GB/node)
+WARNING: Efficiency statistics can only be obtained after the job has ended as seff tool is based on the accounting database data.

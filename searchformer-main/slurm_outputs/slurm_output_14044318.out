@@ -1,0 +1,31 @@
+============================================================================================== 
+Warning! Mixing Conda and module environments may lead to corruption of the
+user environment. 
+We do not recommend users mixing those two environments unless absolutely
+necessary. Note that 
+SURF does not provide any support for Conda environment.
+For more information, please refer to our software policy page:
+https://servicedesk.surf.nl/wiki/display/WIKI/Software+policy+Snellius#SoftwarepolicySnellius-UseofAnacondaandMinicondaenvironmentsonSnellius 
+
+Remember that many packages have already been installed on the system and can
+be loaded using 
+the 'module load <package__name>' command. If you are uncertain if a package is
+already available 
+on the system, please use 'module avail' or 'module spider' to search for it.
+============================================================================================== 
+/var/spool/slurm/slurmd/job14044318/slurm_script: line 65: syntax error near unexpected token `('
+/var/spool/slurm/slurmd/job14044318/slurm_script: line 65: `print("Sample doc count per collection (first 5):")'
+
+JOB STATISTICS
+==============
+Job ID: 14044318
+Cluster: snellius
+User/Group: overven/overven
+State: FAILED (exit code 2)
+Nodes: 1
+Cores per node: 9
+CPU Utilized: 00:00:01
+CPU Efficiency: 1.59% of 00:01:03 core-walltime
+Job Wall-clock time: 00:00:07
+Memory Utilized: 3.64 MB
+Memory Efficiency: 0.01% of 60.00 GB (60.00 GB/node)

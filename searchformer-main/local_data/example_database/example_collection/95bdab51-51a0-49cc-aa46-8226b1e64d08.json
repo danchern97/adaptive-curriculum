@@ -1,0 +1,11 @@
+{
+  "name": "Example Document",
+  "type": "test",
+  "value": 100,
+  "tags": [
+    "example",
+    "demo"
+  ],
+  "_id": "95bdab51-51a0-49cc-aa46-8226b1e64d08",
+  "updated": true
+}

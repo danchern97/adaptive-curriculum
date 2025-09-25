@@ -1,3 +1,11 @@
+# Compiled files
 *.gz
-/searchformer-main/searchformer/transformer/__pycache__
-/searchformer-main/searchformer/__pycache__
+*.pyc
+__pycache__/
+
+# Project specific
+/searchformer-main/searchformer/transformer/__pycache__/
+/searchformer-main/searchformer/__pycache__/
+searchformer.gz
+searchformer.vocabulary.gz
+sokoban.vocabulary.gz

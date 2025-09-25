@@ -1,0 +1,71 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --job-name=test
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=00:30:00
+#SBATCH --output=slurm_output_%A.out
+
+# --- modules / conda ---
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+source activate searchformer          # make sure this env has: pymongo, click, numpy, pygame (imported)
+
+# --- paths (adjust REPO_DIR if you submit from elsewhere) ---
+REPO_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+cd "$REPO_DIR"
+
+# Your downloaded MongoDB (example path from your message)
+MONGO_DIR="$REPO_DIR/vendor/mongodb-linux-x86_64-rhel80-6.0.14"
+MONGOD="$MONGO_DIR/bin/mongod"
+chmod +x "$MONGOD"
+
+# --- per-job DB in node-local scratch ---
+DBPATH="$TMPDIR/mongodb"
+LOGFILE="$TMPDIR/mongod.log"
+mkdir -p "$DBPATH"
+
+# Pick a per-job port to avoid collisions on shared nodes
+PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+
+# Start MongoDB bound to localhost only
+"$MONGOD" \
+  --dbpath "$DBPATH" \
+  --bind_ip 127.0.0.1 \
+  --port "$PORT" \
+  --wiredTigerCacheSizeGB 1 \
+  --nojournal \
+  --logpath "$LOGFILE" \
+  --fork
+
+# Tell SearchFormer where the DB is
+export MONGODB_URI="mongodb://127.0.0.1:${PORT}/mongo"
+
+# (Optional) quick sanity check that MongoDB is reachable
+python - << 'PY'
+import os, sys, time
+from pymongo import MongoClient, errors
+uri=os.environ['MONGODB_URI']
+for i in range(10):
+    try:
+        MongoClient(uri, serverSelectionTimeoutMS=1000).admin.command('ping')
+        print("MongoDB is up at", uri); break
+    except errors.ServerSelectionTimeoutError:
+        time.sleep(0.5)
+else:
+    print("ERROR: MongoDB not reachable at", uri, file=sys.stderr); sys.exit(1)
+PY
+
+# --- run your generation (exactly like on your laptop) ---
+# If your package is a module `searchformer`, this will work:
+python -m searchformer.sokoban generate \
+  --width 7 --height 7 --num-walls 2 --num-boxes 2 --num-samples 1
+
+# (Optional) tokenize afterwards
+# python -m searchformer.sokoban tokenize --width 7 --height 7 --num-walls 2 --num-boxes 2
+
+# Shut down MongoDB cleanly
+pkill -f "mongod.*--port ${PORT}" || true
