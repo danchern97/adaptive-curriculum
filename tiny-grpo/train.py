@@ -1,6 +1,8 @@
 from collections.abc import Callable
 import json
 from pathlib import Path
+import os
+import sys
 import random
 import re
 from typing import Any, Iterator, Optional
@@ -45,6 +47,192 @@ The assistant first thinks about the reasoning process in the mind and then prov
 """
 
 
+# --- Sokoban helpers (import from searchformer) ---
+# Add searchformer-main to path and import the existing Sokoban class
+repo_root = Path(__file__).resolve().parents[1]
+searchformer_path = repo_root / "searchformer-main"
+if str(searchformer_path) not in sys.path:
+    sys.path.insert(0, str(searchformer_path))
+
+from searchformer.sokoban import Sokoban
+
+
+def sokoban_prompt_from_level(level_str: str) -> str:
+    """
+    Create a concise Sokoban instruction prompt for chat format.
+    The model must output a plan enclosed in <answer>...</answer> using moves: up, down, left, right.
+    """
+    return (
+        "Solve the Sokoban puzzle below. The grid uses these symbols: #=wall, .=dock, $=box, *=box on dock, @=worker, +=worker on dock, space=floor.\n"
+        "Return ONLY a sequence of moves as space-separated tokens inside <answer>...</answer>, using the words: up, down, left, right.\n"
+        "You may include <think>...</think> before the answer.\n\n"
+        f"Level:\n{level_str.strip()}\n\n"
+        "Example: <think>reasoning</think> <answer>right right up left down</answer>"
+    )
+
+
+def parse_moves_from_answer(answer_text: str) -> list[str]:
+    """Parse moves from free-form text; accepts up/down/left/right or u/d/l/r."""
+    toks = re.findall(r"[A-Za-z]+", answer_text)
+    mapping = {
+        "u": "up",
+        "up": "up",
+        "d": "down",
+        "down": "down",
+        "l": "left",
+        "left": "left",
+        "r": "right",
+        "right": "right",
+    }
+    moves: list[str] = []
+    for t in toks:
+        t_l = t.lower()
+        if t_l in mapping:
+            moves.append(mapping[t_l])
+    return moves
+
+
+def make_sokoban_reward_fn(level_str: str) -> Callable[[str], float]:
+    """
+    Build a reward function that evaluates a generated completion by simulating
+    the extracted moves on the given Sokoban level. Returns 1.0 if solved, else 0.0.
+    """
+    # Prepare initial state once
+    grid = [list(line.rstrip("\n")) for line in level_str.strip("\n").splitlines()]
+
+    def reward_fn(completion: str) -> float:
+        # Extract <answer>...</answer>
+        m = re.search(r"<answer>(.*?)</answer>", completion, flags=re.DOTALL)
+        if not m:
+            return 0.0
+        ans = m.group(1)
+        moves = parse_moves_from_answer(ans)
+        # If no recognizable moves, tiny penalty to encourage output format
+        if not moves:
+            return 0.0
+        sok = Sokoban([row[:] for row in grid])
+        for mv in moves:
+            try:
+                sok.move(mv)
+            except Exception:
+                # Invalid action token; stop early
+                break
+        return 1.0 if sok.is_complete else 0.0
+
+    return reward_fn
+
+
+def load_sokoban_levels_from_json_file(json_file_path: str, max_rows: Optional[int] = None) -> list[dict]:
+    """Load Sokoban levels from a specific JSON file."""
+    json_path = Path(json_file_path)
+    
+    if not json_path.exists():
+        print(f"Warning: JSON file not found at {json_path}")
+        return []
+    
+    rows: list[dict] = []
+    
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Try to extract Sokoban grids from the JSON data
+        if isinstance(data, dict):
+            for key, value in data.items():
+                # Look for grid-like data structures
+                level_str = extract_sokoban_grid(value)
+                if level_str:
+                    rows.append({
+                        "task": sokoban_prompt_from_level(level_str),
+                        "level": level_str,
+                        "level_file": str(json_path),
+                        "key": key
+                    })
+                    
+                    if max_rows is not None and len(rows) >= max_rows:
+                        return rows
+                        
+    except Exception as e:
+        print(f"Warning: Could not read {json_path}: {e}")
+        return []
+    
+    return rows
+
+
+def extract_sokoban_grid(data: Any) -> Optional[str]:
+    """Extract Sokoban grid from various data formats."""
+    if isinstance(data, str):
+        # Check if it looks like a Sokoban grid
+        if '#' in data and any(c in data for c in '@$.*+'):
+            return data
+    elif isinstance(data, dict):
+        # Look for common field names that might contain the grid
+        for field in ['level', 'grid', 'state', 'sokoban_start', 'puzzle']:
+            if field in data:
+                sub_data = data[field]
+                if isinstance(sub_data, str):
+                    return sub_data
+                elif isinstance(sub_data, list) and len(sub_data) > 0:
+                    # Try to reconstruct grid from list format
+                    if all(isinstance(row, str) for row in sub_data):
+                        return '\n'.join(sub_data)
+                    elif all(isinstance(row, list) for row in sub_data):
+                        return '\n'.join(''.join(cell for cell in row) for row in sub_data)
+    elif isinstance(data, list) and len(data) > 0:
+        # Grid might be stored as list of strings or list of lists
+        if all(isinstance(row, str) for row in data):
+            return '\n'.join(data)
+        elif all(isinstance(row, list) for row in data):
+            return '\n'.join(''.join(str(cell) for cell in row) for row in data)
+    
+    return None
+
+
+def load_sokoban_levels_from_txt(levels_dir: Optional[str] = None, max_rows: Optional[int] = None) -> list[dict]:
+    """Load Sokoban levels from plain text files."""
+    if levels_dir is None:
+        # default to searchformer-main/static/sokoban
+        repo_root = Path(__file__).resolve().parents[1]
+        levels_path = repo_root / "searchformer-main" / "static" / "sokoban"
+    else:
+        levels_path = Path(levels_dir)
+    
+    if not levels_path.exists():
+        print(f"Warning: Sokoban levels directory not found at {levels_path}")
+        return []
+        
+    level_files = sorted(levels_path.glob("*.txt"))
+    if not level_files:
+        print(f"Warning: No .txt files found in {levels_path}")
+        return []
+        
+    rows: list[dict] = []
+    for p in level_files:
+        level_str = p.read_text(encoding="utf-8")
+        rows.append({
+            "task": sokoban_prompt_from_level(level_str),
+            "level": level_str,
+            "level_file": str(p),
+        })
+        if max_rows is not None and len(rows) >= max_rows:
+            break
+    return rows
+
+
+def load_sokoban_levels(levels_source: Optional[str] = None, max_rows: Optional[int] = None) -> list[dict]:
+    """
+    Load Sokoban levels from either:
+    - A specific JSON file (if levels_source ends with .json)
+    - A directory of text files (otherwise)
+    """
+    if levels_source and levels_source.endswith('.json'):
+        # Load from specific JSON file
+        return load_sokoban_levels_from_json_file(levels_source, max_rows)
+    else:
+        # Load from text files directory
+        return load_sokoban_levels_from_txt(levels_source, max_rows)
+
+
 @torch.no_grad()
 def rollout(
     model: LlamaForCausalLM,
@@ -55,6 +243,7 @@ def rollout(
     max_length: int = 1024,
     temperature: float = 1.0,
     top_p: float = 1.0,
+    reward_fn: Optional[Callable[[str], float]] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, list[str]]:
 
     model.eval()
@@ -111,24 +300,28 @@ def rollout(
     # 3. determine rewards
     returns = torch.zeros(num_rollouts, 1, dtype=torch.float)
     for i, completion in enumerate(completions):
-        # search answer tag
-        answer_match = re.search(
-            r"<answer>(.*?)</answer>",
-            completion,
-            flags=re.DOTALL,
-        )
+        if reward_fn is not None:
+            reward = float(reward_fn(completion))
+            returns[i] = reward
+        else:
+            # search answer tag
+            answer_match = re.search(
+                r"<answer>(.*?)</answer>",
+                completion,
+                flags=re.DOTALL,
+            )
 
-        answer = answer_match.group(1) if answer_match else None
-        reward = 0
-        if answer is not None:
-            if answer == oracle_answer:
-                reward = 1.0
-            elif oracle_answer in answer:
-                reward = 0.5
-            else:
-                reward = 0.01
+            answer = answer_match.group(1) if answer_match else None
+            reward = 0
+            if answer is not None:
+                if answer == oracle_answer:
+                    reward = 1.0
+                elif oracle_answer in answer:
+                    reward = 0.5
+                else:
+                    reward = 0.01
 
-        returns[i] = reward
+            returns[i] = reward
 
     return sequence_ids, returns.to(sequence_ids.device), action_mask, completions
 
@@ -228,21 +421,37 @@ def main():
 
     pad_token_id = tokenizer.eos_token_id
 
-    prompts = read_prompts(
-        "data/math_tasks.jsonl",
-        predicate=lambda x: len(x["question"]) < 128
-        and x["num_terms"] <= 3
-        and x["num_digits"] <= 3,
-        max_rows=64 * 1024,
-    )
-    print(f"found {len(prompts)} matching prompts")
-    prompt_loader = DataLoader(
-        prompts,
-        batch_size=rollouts_per_step,
-        shuffle=True,
-        drop_last=True,
-        pin_memory=False,
-    )
+    # Select dataset mode via env var to keep changes minimal; default to Sokoban
+    dataset_mode = os.environ.get("TINY_GRPO_DATASET", "sokoban").lower()
+
+    if dataset_mode == "math":
+        prompts = read_prompts(
+            "data/math_tasks.jsonl",
+            predicate=lambda x: len(x["question"]) < 128
+            and x["num_terms"] <= 3
+            and x["num_digits"] <= 3,
+            max_rows=64 * 1024,
+        )
+        print(f"found {len(prompts)} matching math prompts")
+        prompt_loader = DataLoader(
+            prompts,
+            batch_size=rollouts_per_step,
+            shuffle=True,
+            drop_last=True,
+            pin_memory=False,
+        )
+    else:
+        # Sokoban mode: load levels. Use SOKOBAN_DATA_FILE for specific JSON file or SOKOBAN_LEVELS_DIR for text files
+        sokoban_source = os.environ.get("SOKOBAN_DATA_FILE") or os.environ.get("SOKOBAN_LEVELS_DIR")
+        prompts = load_sokoban_levels(levels_source=sokoban_source, max_rows=64 * 1024)
+        print(f"found {len(prompts)} sokoban levels")
+        prompt_loader = DataLoader(
+            prompts,
+            batch_size=rollouts_per_step,
+            shuffle=True,
+            drop_last=True,
+            pin_memory=False,
+        )
 
     replay_buffer = ReplayBuffer()
     objective = GRPOLoss(clip_eps=clip_eps, kl_weight=kl_weight)
@@ -257,57 +466,113 @@ def main():
 
         replay_buffer.clear()
 
-        questions = prompt_batch["question"]
-        answers = prompt_batch["answer"]
+        if dataset_mode == "math":
+            questions = prompt_batch["question"]
+            answers = prompt_batch["answer"]
 
-        with torch.no_grad():
-            for q, a in zip(questions, answers):
-                sequence_ids, returns, action_mask, completions = rollout(
-                    model,
-                    tokenizer,
-                    q,
-                    a,
-                    num_rollouts=group_size,
-                    max_length=max_length,
-                    temperature=temperature,
-                    top_p=top_p,
-                )
+            with torch.no_grad():
+                for q, a in zip(questions, answers):
+                    sequence_ids, returns, action_mask, completions = rollout(
+                        model,
+                        tokenizer,
+                        q,
+                        a,
+                        num_rollouts=group_size,
+                        max_length=max_length,
+                        temperature=temperature,
+                        top_p=top_p,
+                    )
 
-                print(
-                    f"rollout q='{q}', a='{a}', returns={returns.sum().item():.2f}, replay_buffer_size={len(replay_buffer)}, sequence_ids={sequence_ids.shape}"
-                )
-                rollout_returns.append(returns.cpu())
+                    print(
+                        f"rollout q='{q}', a='{a}', returns={returns.sum().item():.2f}, replay_buffer_size={len(replay_buffer)}, sequence_ids={sequence_ids.shape}"
+                    )
+                    rollout_returns.append(returns.cpu())
 
-                advantages = group_advantages(returns)
-                attention_mask = sequence_ids != pad_token_id
+                    advantages = group_advantages(returns)
+                    attention_mask = sequence_ids != pad_token_id
 
-                log_probs = sequences_log_probs(
-                    model=model,
-                    sequence_ids=sequence_ids,
-                    attention_mask=attention_mask,
-                )
-                log_probs_ref = sequences_log_probs(
-                    model=reference_model,
-                    sequence_ids=sequence_ids,
-                    attention_mask=attention_mask,
-                )
-                kl = approx_kl_divergence(
-                    log_probs=log_probs,
-                    log_probs_ref=log_probs_ref,
-                    action_mask=action_mask,
-                )
+                    log_probs = sequences_log_probs(
+                        model=model,
+                        sequence_ids=sequence_ids,
+                        attention_mask=attention_mask,
+                    )
+                    log_probs_ref = sequences_log_probs(
+                        model=reference_model,
+                        sequence_ids=sequence_ids,
+                        attention_mask=attention_mask,
+                    )
+                    kl = approx_kl_divergence(
+                        log_probs=log_probs,
+                        log_probs_ref=log_probs_ref,
+                        action_mask=action_mask,
+                    )
 
-                experience = Experience(
-                    sequences=sequence_ids,
-                    action_log_probs=log_probs,
-                    log_probs_ref=log_probs_ref,
-                    returns=returns,
-                    advantages=advantages,
-                    attention_mask=attention_mask,
-                    action_mask=action_mask,
-                    kl=kl,
-                )
-                replay_buffer.append(experience.to(cpu_device))
+                    experience = Experience(
+                        sequences=sequence_ids,
+                        action_log_probs=log_probs,
+                        log_probs_ref=log_probs_ref,
+                        returns=returns,
+                        advantages=advantages,
+                        attention_mask=attention_mask,
+                        action_mask=action_mask,
+                        kl=kl,
+                    )
+                    replay_buffer.append(experience.to(cpu_device))
+        else:
+            tasks = prompt_batch["task"]
+            levels = prompt_batch["level"]
+
+            with torch.no_grad():
+                for task, level_str in zip(tasks, levels):
+                    r_fn = make_sokoban_reward_fn(level_str)
+                    sequence_ids, returns, action_mask, completions = rollout(
+                        model,
+                        tokenizer,
+                        task,
+                        oracle_answer="",
+                        num_rollouts=group_size,
+                        max_length=max_length,
+                        temperature=temperature,
+                        top_p=top_p,
+                        reward_fn=r_fn,
+                    )
+
+                    solved = returns.sum().item()
+                    print(
+                        f"sokoban rollout returns={solved:.2f}, replay_buffer_size={len(replay_buffer)}, sequence_ids={sequence_ids.shape}"
+                    )
+                    rollout_returns.append(returns.cpu())
+
+                    advantages = group_advantages(returns)
+                    attention_mask = sequence_ids != pad_token_id
+
+                    log_probs = sequences_log_probs(
+                        model=model,
+                        sequence_ids=sequence_ids,
+                        attention_mask=attention_mask,
+                    )
+                    log_probs_ref = sequences_log_probs(
+                        model=reference_model,
+                        sequence_ids=sequence_ids,
+                        attention_mask=attention_mask,
+                    )
+                    kl = approx_kl_divergence(
+                        log_probs=log_probs,
+                        log_probs_ref=log_probs_ref,
+                        action_mask=action_mask,
+                    )
+
+                    experience = Experience(
+                        sequences=sequence_ids,
+                        action_log_probs=log_probs,
+                        log_probs_ref=log_probs_ref,
+                        returns=returns,
+                        advantages=advantages,
+                        attention_mask=attention_mask,
+                        action_mask=action_mask,
+                        kl=kl,
+                    )
+                    replay_buffer.append(experience.to(cpu_device))
 
         torch.cuda.empty_cache()
         episode_return_sum = torch.stack(rollout_returns).sum()

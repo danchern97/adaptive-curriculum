@@ -1,5 +1,6 @@
+from __future__ import annotations
 from dataclasses import dataclass, fields
-from typing import Optional, Self
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -29,7 +30,7 @@ class Experience:
     action_mask: torch.Tensor
     kl: Optional[torch.Tensor] = None
 
-    def to(self, device: torch.device) -> Self:
+    def to(self, device: torch.device) -> "Experience":
         members = {}
         for field in fields(self):
             v = getattr(self, field.name)

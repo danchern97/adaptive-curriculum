@@ -1,0 +1,18 @@
+#!/bin/bash
+
+#SBATCH --job-name=train_sokoban_grpo
+#SBATCH --partition=gpu_h100        
+#SBATCH --gpus=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=01:00:00
+#SBATCH --output=slurm_outputs/train_sokoban_output_%j.out
+
+module purge
+module load 2023
+module load Anaconda3/2023.07-2
+source activate searchformer
+export WANDB_API_KEY="d7c4c0d5cea2d3c3143bea851765b771b96e76e8"
+export TINY_GRPO_DATASET="sokoban"
+
+srun python train.py
