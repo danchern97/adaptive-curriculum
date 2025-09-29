@@ -31,6 +31,13 @@ from torch.distributed import (
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    wandb = None
+
 from .trace import AStarTrace, DictTokenizer, TokenizedDataset
 from .transformer import (
     EncoderDecoder,
@@ -369,6 +376,8 @@ class TrainConfig:
     log_interval: int
     eval_interval: int
     start_checkpoint: Optional[str] = None
+    wandb_project: Optional[str] = "adaptive-curriculum-searchformer"
+    wandb_enabled: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         doc_dict = {
@@ -379,6 +388,8 @@ class TrainConfig:
             "optimizer": self.optimizer.to_dict(),
             "log_interval": self.log_interval,
             "eval_interval": self.eval_interval,
+            "wandb_project": self.wandb_project,
+            "wandb_enabled": self.wandb_enabled,
         }
         if self.start_checkpoint is not None:
             doc_dict["start_checkpoint"] = self.start_checkpoint
@@ -395,6 +406,8 @@ class TrainConfig:
             log_interval=d["log_interval"],
             eval_interval=d["eval_interval"],
             start_checkpoint=d.get("start_checkpoint", None),
+            wandb_project=d.get("wandb_project", "adaptive-curriculum-searchformer"),
+            wandb_enabled=d.get("wandb_enabled", True),
         )
 
     @staticmethod
@@ -416,6 +429,8 @@ class TrainConfig:
         min_reasoning_len: Optional[int] = None,
         max_reasoning_len: Optional[int] = None,
         start_checkpoint: Optional[str] = None,
+        wandb_project: Optional[str] = "adaptive-curriculum-searchformer",
+        wandb_enabled: bool = True,
     ) -> "TrainConfig":
         return TrainConfig(
             run_id=run_id,
@@ -439,6 +454,8 @@ class TrainConfig:
             log_interval=log_interval,
             eval_interval=eval_interval,
             start_checkpoint=start_checkpoint,
+            wandb_project=wandb_project,
+            wandb_enabled=wandb_enabled,
         )
 
 
@@ -1037,6 +1054,26 @@ class TrainRun:
         self.rank = get_rank()
         self.world_size = get_world_size()
 
+        # Initialize wandb on main process
+        if self.rank == 0 and config.wandb_enabled and WANDB_AVAILABLE:
+            try:
+                wandb.init(
+                    project=config.wandb_project,
+                    name=f"searchformer_{config.run_id}",
+                    config={
+                        "run_id": config.run_id,
+                        "data_config": config.data.to_dict(),
+                        "encoder": config.encoder,
+                        "decoder": config.decoder,
+                        "optimizer_config": config.optimizer.to_dict(),
+                        "log_interval": config.log_interval,
+                        "eval_interval": config.eval_interval,
+                    }
+                )
+                logging.info(f"Initialized wandb run: {wandb.run.name}")
+            except Exception as e:
+                logging.warning(f"Failed to initialize wandb: {e}")
+
         vocab_size = self.test_dataset.tokenizer.vocab_size
         model_config = EncoderDecoderConfig.from_name(
             enc_name=self.config.encoder,
@@ -1127,9 +1164,19 @@ class TrainRun:
             loss_obj = None
 
         logging.info("Completed evaluation.")
-        run_data.log_test(
-            self.config.run_id, test_logger.get_log_dict_and_reset(self.step)
-        )
+        log_dict = test_logger.get_log_dict_and_reset(self.step)
+        run_data.log_test(self.config.run_id, log_dict)
+        
+        # Log evaluation metrics to wandb
+        if self.rank == 0 and self.config.wandb_enabled and WANDB_AVAILABLE and wandb.run is not None:
+            try:
+                wandb_log_dict = {"eval_step": self.step}
+                for key, value in log_dict["value"].items():
+                    wandb_log_dict[f"eval/{key}"] = value
+                wandb.log(wandb_log_dict)
+            except Exception as e:
+                logging.warning(f"Failed to log evaluation to wandb: {e}")
+        
         barrier()
         self.model.train()
         barrier()
@@ -1187,6 +1234,22 @@ class TrainRun:
                 lr_dict = {str(i): lr for i, lr in enumerate(lr_list)}
                 log_dict["value"]["lr"] = lr_dict
                 run_data.log_train(self.config.run_id, log_dict)
+                
+                # Log to wandb
+                if self.rank == 0 and self.config.wandb_enabled and WANDB_AVAILABLE and wandb.run is not None:
+                    try:
+                        wandb_log_dict = {
+                            "step": self.step,
+                            "learning_rate": self.schedule.get_last_lr()[0] if lr_list else None,
+                        }
+                        # Add loss metrics
+                        for key, value in log_dict["value"].items():
+                            if key != "lr":
+                                wandb_log_dict[f"train/{key}"] = value
+                        wandb.log(wandb_log_dict)
+                    except Exception as e:
+                        logging.warning(f"Failed to log to wandb: {e}")
+                
                 logging.info(
                     f"Completed {self.step} steps, "
                     + f"lr={self.schedule.get_last_lr()}"
@@ -1199,6 +1262,14 @@ class TrainRun:
         if self.step % self.config.eval_interval > 0:
             self.evaluate(run_data)
             self.checkpoint()
+        
+        # Finish wandb run
+        if self.rank == 0 and self.config.wandb_enabled and WANDB_AVAILABLE and wandb.run is not None:
+            try:
+                wandb.finish()
+                logging.info("Wandb run finished")
+            except Exception as e:
+                logging.warning(f"Failed to finish wandb run: {e}")
 
 
 @main.command()
@@ -1265,10 +1336,21 @@ def _train(run_id: str, **args):
     init_process_group(backend="nccl", timeout=datetime.timedelta(hours=4))
     setup_logging_ddp()
     run_data = TrainRunData()
-    run = TrainRun(TrainConfig.from_args(run_id=run_id, **args))
+    
+    # Handle wandb parameters
+    wandb_project = args.pop("wandb_project", "adaptive-curriculum-searchformer")
+    wandb_enabled = not args.pop("disable_wandb", False)
+    
+    run = TrainRun(TrainConfig.from_args(
+        run_id=run_id, 
+        wandb_project=wandb_project,
+        wandb_enabled=wandb_enabled,
+        **args
+    ))
     logging.info(f"Run id: {run.config.run_id}")
     if run.rank == 0:
         logging.info(f"Args: {args}")
+        logging.info(f"Wandb enabled: {wandb_enabled}, project: {wandb_project}")
 
     # To determine if this is the first time the run is launched, check in
     # every worker if the run already exists. If not, then determine if a
@@ -1390,6 +1472,17 @@ statistic on the test set.""",
     type=str,
     default=None,
     help="Id of start checkpoint.",
+)
+@click.option(
+    "--wandb-project",
+    type=str,
+    default="adaptive-curriculum-searchformer",
+    help="Wandb project name.",
+)
+@click.option(
+    "--disable-wandb",
+    is_flag=True,
+    help="Disable wandb logging.",
 )
 def single(run_id: str, **args):
     """Start single DDP training run."""

@@ -21,3 +21,4 @@ pygame
 pre-commit
 pymongo
 imageio
+wandb>=0.19.0

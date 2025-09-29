@@ -9,3 +9,8 @@ __pycache__/
 searchformer.gz
 searchformer.vocabulary.gz
 sokoban.vocabulary.gz
+
+/jobs/
+*/slurm_logs/
+data/
+*/sokoban_experiments/
