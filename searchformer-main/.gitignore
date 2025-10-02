@@ -160,5 +160,8 @@ local_data/trainDB/
 # MongoDB data
 .mongo/
 
+# Vendor dependencies (large MongoDB binaries)
+vendor/
+
 # Results files
 results_*.json
