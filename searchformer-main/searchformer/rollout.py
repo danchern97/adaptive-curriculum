@@ -335,7 +335,11 @@ class RolloutDataStore:
         self.dataset_collection.delete_one({"_id": ObjectId(dataset.id)})
 
     def load_by_id(self, id: str) -> RolloutDataset:
-        res = self.dataset_collection.find_one({"_id": ObjectId(id)})
+        # Try to use the ID as-is first (for UUID strings), fallback to ObjectId
+        try:
+            res = self.dataset_collection.find_one({"_id": id})
+        except:
+            res = self.dataset_collection.find_one({"_id": ObjectId(id)})
         assert type(res) is dict
         args = {k: v for k, v in res.items() if k != "_id"}
         return RolloutDataset(

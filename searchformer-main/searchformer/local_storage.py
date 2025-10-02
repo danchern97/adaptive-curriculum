@@ -236,6 +236,15 @@ class LocalCollection:
                 values.add(doc[field])
         return list(values)
     
+    def create_index(self, keys: Union[Dict, List], unique: bool = False, **kwargs):
+        """
+        Create an index (no-op for local storage).
+        Indexes are not needed for local file storage, but this method exists
+        for MongoDB compatibility.
+        """
+        # No-op for local storage - indexes aren't needed for small datasets
+        pass
+    
     def _matches_filter(self, doc: Dict, filter_dict: Dict) -> bool:
         """Check if document matches the filter."""
         for key, value in filter_dict.items():
