@@ -1,0 +1,59 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=sf-local-sweep
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=05:00:00
+#SBATCH --output=slurm_outputs/train_searchformer_%A.out
+
+# (Optional) Load env on your cluster
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+source activate searchformer
+
+# Always run from repo root
+REPO_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+cd "$REPO_DIR"
+
+# Force local storage (no MongoDB) and point to data dir
+export USE_MONGODB=false
+export LOCAL_DATA_PATH="$REPO_DIR/local_data"
+
+# Sweep config (override by exporting CONFIG_JSON/CONFIG_INDEX before sbatch)
+export CONFIG_JSON="${CONFIG_JSON:-$REPO_DIR/config/sweep/sokoban-7722-l-trace-plan-100k.json}"
+export CONFIG_INDEX="${CONFIG_INDEX:-0}"
+
+# Derive dataset name from the sweep file to make a readable RUN_ID
+DATASET_NAME=$(python - <<'PY'
+import json, os
+cfg=os.environ["CONFIG_JSON"]
+idx=int(os.environ["CONFIG_INDEX"])
+with open(cfg,'r') as f:
+    items=json.load(f)
+print(items[idx].get('train_name','run'))
+PY
+)
+# Sanitize and add job id
+RUN_ID_BASE=$(echo "$DATASET_NAME" | sed 's/[^A-Za-z0-9_-]/-/g')
+RUN_ID="${RUN_ID_BASE}-${SLURM_JOB_ID}"
+
+# Launch single-GPU sweep run using local data
+# Checkpoints/logs will be written under $LOCAL_DATA_PATH
+
+torchrun \
+  --rdzv-backend=c10d \
+  --rdzv-endpoint=localhost:0 \
+  --nnodes=1 \
+  --nproc-per-node=1 \
+  --module searchformer.train \
+  sweep \
+  --run-id "$RUN_ID" \
+  --index "$CONFIG_INDEX" \
+  --sweep "$CONFIG_JSON"
+
+# Where to find outputs:
+#  - Logs:       $LOCAL_DATA_PATH/logs/${RUN_ID}.train.jsonl and ...test.jsonl
+#  - Checkpoint: $LOCAL_DATA_PATH/ckptDB/fs.${RUN_ID}/

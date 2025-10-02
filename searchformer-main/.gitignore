@@ -144,3 +144,24 @@ data*
 
 # Any logs
 log/
+
+# Slurm output files
+*.out
+slurm_outputs/
+
+# Local data directories
+local_data/ckptDB/
+local_data/logs/
+local_data/rolloutDB/
+local_data/sokobanDB/
+local_data/tokenSeqDB/
+local_data/trainDB/
+
+# MongoDB data
+.mongo/
+
+# Vendor dependencies (large MongoDB binaries)
+vendor/
+
+# Results files
+results_*.json

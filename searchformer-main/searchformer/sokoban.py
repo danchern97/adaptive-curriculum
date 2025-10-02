@@ -989,24 +989,54 @@ def generation_args_to_name(
     default=1000,
     help="Number of tasks to sample",
 )
+@click.option(
+    "--test-only",
+    is_flag=True,
+    default=False,
+    help="Generate all samples as test set (no train/test split)",
+)
+@click.option(
+    "--train-only",
+    is_flag=True,
+    default=False,
+    help="Generate all samples as train set (no train/test split)",
+)
+@click.option(
+    "--dataset-suffix",
+    type=str,
+    default="",
+    help="Optional suffix to append to dataset name (e.g., '-grpo')",
+)
 def generate(
     width: int,
     height: int,
     num_walls: int,
     num_boxes: int,
     num_samples: int,
+    test_only: bool,
+    train_only: bool,
+    dataset_suffix: str,
 ):
     """Generate Sokoban tasks and insert A* execution traces into MongoDB."""
+    if test_only and train_only:
+        raise ValueError("Cannot set both --test-only and --train-only flags")
+    
     name = generation_args_to_name(
         width=width,
         height=height,
         num_walls=num_walls,
         num_boxes=num_boxes,
     )
+    if dataset_suffix:
+        name = f"{name}{dataset_suffix}"
     dataset = SokobanTraceDataset(name)
     samples_stored = 0
     while samples_stored < num_samples:
-        if samples_stored < 9 * num_samples // 10:
+        if test_only:
+            is_test = True
+        elif train_only:
+            is_test = False
+        elif samples_stored < 9 * num_samples // 10:
             is_test = False
         else:
             is_test = True
@@ -1180,6 +1210,12 @@ class WithBoxSokobanTokenizer(SimpleSokobanTokenizer):
     default=1,
     help="Total number of workers.",
 )
+@click.option(
+    "--dataset-suffix",
+    type=str,
+    default="",
+    help="Optional suffix to append to dataset name (must match generate suffix)",
+)
 def tokenize(
     width: int,
     height: int,
@@ -1187,6 +1223,7 @@ def tokenize(
     num_boxes: int,
     rank: int,
     world_size: int,
+    dataset_suffix: str,
 ):
     """Tokenize trace dataset.
 
@@ -1196,6 +1233,8 @@ def tokenize(
     name = generation_args_to_name(
         width=width, height=height, num_walls=num_walls, num_boxes=num_boxes
     )
+    if dataset_suffix:
+        name = f"{name}{dataset_suffix}"
     sokoban_dataset = SokobanTraceDataset(name)
     tokenizer = WithBoxSokobanTokenizer(width, height)
     tok_dataset = TokenizedDataset(f"{sokoban_dataset.name}.with-box-40k")
