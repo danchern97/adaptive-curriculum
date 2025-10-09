@@ -1237,7 +1237,12 @@ def tokenize(
         name = f"{name}{dataset_suffix}"
     sokoban_dataset = SokobanTraceDataset(name)
     tokenizer = WithBoxSokobanTokenizer(width, height)
-    tok_dataset = TokenizedDataset(f"{sokoban_dataset.name}.with-box-40k")
+    # Only append '40k' suffix if no custom dataset suffix was provided
+    if dataset_suffix:
+        tok_dataset_name = f"{sokoban_dataset.name}.with-box"
+    else:
+        tok_dataset_name = f"{sokoban_dataset.name}.with-box-40k"
+    tok_dataset = TokenizedDataset(tok_dataset_name)
     tok_dataset.add_vocabulary(tokenizer.vocabulary)
 
     total_traces = 0

@@ -1,0 +1,75 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --time=01:00:00
+#SBATCH --cpus-per-task=9
+#SBATCH --job-name=sf-eval-quick
+#SBATCH --output=slurm_outputs/eval_quick_%j.out
+
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+source activate searchformer
+
+cd /gpfs/home2/overven/adaptive-curriculum/searchformer-main
+
+export LOCAL_DATA_PATH=local_data
+
+CHECKPOINT_ID="sokoban-7-by-7-walls-2-boxes-2-with-box-40k-15127267"
+
+# echo "========================================================================"
+# echo "Quick Evaluation of Trained Searchformer Model"
+# echo "========================================================================"
+# echo "Checkpoint: $CHECKPOINT_ID"
+# echo "Date: $(date)"
+# echo ""
+# echo "This script evaluates on:"
+# echo "  1. GRPO-easy test set (7x7, same as training)"
+# echo "  2. GRPO-hard test set (8x8, harder/bigger puzzles)"
+# echo ""
+# echo "Settings:"
+# echo "  - Greedy decoding (1 sample per puzzle)"
+# echo "  - 10,000 token rollout length"
+# echo "  - Testing ALL available test puzzles"
+# echo "========================================================================"
+# echo ""
+
+# # Evaluate on GRPO-easy (7x7 - same size as training)
+# echo ">>> Evaluating on GRPO-easy test set (7x7)..."
+# python -m searchformer.rollout greedy \
+#   --checkpoint-id "$CHECKPOINT_ID" \
+#   --dataset-name "sokoban.7-by-7-walls-2-boxes-2-grpo-easy.with-box-40k" \
+#   --rollout-len 10000 \
+#   --rollout-repeats 1 \
+#   --test-sequences 100 \
+#   --batch-size 16 \
+
+# echo ""
+# echo ">>> GRPO-easy evaluation complete!"
+# echo ""
+
+# Evaluate on GRPO-hard (8x8 - larger puzzles than training)
+echo ">>> Evaluating on GRPO-hard test set (8x8)..."
+python -m searchformer.rollout greedy\
+  --checkpoint-id "$CHECKPOINT_ID" \
+  --dataset-name "sokoban.8-by-8-walls-2-boxes-2-grpo-hard.with-box-40k" \
+  --rollout-len 20000 \
+  --rollout-repeats 10 \
+  --test-sequences 1 \
+  --batch-size 1 \
+
+echo ""
+echo ">>> GRPO-hard evaluation complete!"
+echo ""
+echo "========================================================================"
+echo "Evaluation finished!"
+echo "========================================================================"
+echo ""
+echo "To analyze results, run:"
+echo "  python compute_any_optimal_64.py --rollout-id <ROLLOUT_ID>"
+echo ""
+echo "Note: With 1 sample per puzzle (greedy), the 'solve rate' will be lower"
+echo "than with 64 samples, but much faster to compute!"
+echo ""
+echo "Expected rollout IDs will be shown in MongoDB/local storage."
+echo "========================================================================"

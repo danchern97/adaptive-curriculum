@@ -1,13 +1,16 @@
 #!/bin/bash
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_mig
 #SBATCH --gpus=1
-#SBATCH --time=04:00:00
+#SBATCH --time=25:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --job-name=rollout-any64
-#SBATCH --output=slurm_outputs/rollout_any64_%j.out
+#SBATCH --job-name=max10k_rollout
+#SBATCH --output=slurm_outputs/rollout_max10k_%j.out
 
 source ~/.bashrc
-conda activate searchformer
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+source activate searchformer
 
 cd /gpfs/home2/overven/adaptive-curriculum/searchformer-main
 
@@ -16,14 +19,16 @@ export LOCAL_DATA_PATH=local_data
 
 # Generate 64 rollouts (samples) per test puzzle
 # This uses the ORIGINAL searchformer rollout system
+# FIXED: Increased rollout-len from 512 to 10000 to match paper's approach
+# OPTIMIZED: Increased batch-size from 4 to 16 for faster generation (matches paper's rollout example)
 python -m searchformer.rollout greedy \
-  --checkpoint-id sokoban-7-by-7-walls-2-boxes-2-with-box-40k-14888123 \
+  --checkpoint-id sokoban-7-by-7-walls-2-boxes-2-with-box-40k-15069021 \
   --dataset-name sokoban.7-by-7-walls-2-boxes-2.with-box-40k \
-  --rollout-len 512 \
+  --rollout-len 10000 \
   --rollout-repeats 64 \
   --test-sequences 200 \
   --rank 0 \
   --world-size 1 \
-  --batch-size 4
+  --batch-size 16
 
 echo "Rollout generation complete!"

@@ -92,6 +92,19 @@ class AStarTraceIterableDataset(IterableDataset):
         self.dataset = TokenizedDataset(name)
         self.tokenizer = DictTokenizer(self.dataset.vocabulary)
         self.plan_only = plan_only
+        
+        # Verify vocabulary configuration
+        vocab = self.dataset.vocabulary
+        coords = sorted([t for t in vocab if t.isdigit()], key=int)
+        c_tokens = [t for t in vocab if t.startswith('c') and t[1:].isdigit()]
+        special = [t for t in vocab if t in ['box', 'worker', 'dock', 'wall', 'create', 'close', 'plan']]
+        logging.info(f"=" * 70)
+        logging.info(f"VOCABULARY INFO for dataset: {name}")
+        logging.info(f"  Total tokens: {len(vocab)}")
+        logging.info(f"  Coordinates: {coords[0]}-{coords[-1]} (max grid: {len(coords)}x{len(coords)})")
+        logging.info(f"  C-tokens: {len(c_tokens)}")
+        logging.info(f"  Special tokens: {len(special)}")
+        logging.info(f"=" * 70)
 
         if not use_test and reasoning_range is None:
             self.ids = self.dataset.train_ids

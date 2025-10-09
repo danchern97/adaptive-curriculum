@@ -642,6 +642,13 @@ def greedy(
     to constrain the dataset slice included this rollout dataset.
     """
     logging.info(f"Rolling out checkpoint {checkpoint_id}")
+    
+    # Handle None values for rank and world_size (when not provided via CLI)
+    if rank is None:
+        rank = 0
+    if world_size is None:
+        world_size = 1
+    
     params = RolloutParameter(
         checkpoint_id=checkpoint_id,
         dataset_name=dataset_name,
@@ -753,6 +760,13 @@ def probability(
     to constrain the dataset slice included this rollout dataset.
     """
     logging.info(f"Rolling out checkpoint {checkpoint_id}")
+    
+    # Handle None values for rank and world_size (when not provided via CLI)
+    if rank is None:
+        rank = 0
+    if world_size is None:
+        world_size = 1
+    
     params = RolloutParameter(
         checkpoint_id=checkpoint_id,  # type: ignore
         dataset_name=dataset_name,
