@@ -762,7 +762,7 @@ def sample_positions(
 
 
 def generate_level(
-    width: int, height: int, num_walls: int, num_boxes: int = 1
+    width: int, height: int, num_walls: int, num_boxes: int = 1, seed: int | None = None
 ) -> Sokoban:
     """Randomly generate Sokoban level.
 
@@ -771,10 +771,14 @@ def generate_level(
         height (int): Grid height.
         num_walls (int): Number of interior wall cells.
         num_boxes (int, optional): Number of boxes. Defaults to 1.
+        seed (int | None, optional): Random seed for reproducibility. Defaults to None.
 
     Returns:
         Sokoban: Sokoban task state.
     """
+    if seed is not None:
+        random.seed(seed)
+    
     pos_to_obj = {}
     for xy in boundary_positions(width, height):
         pos_to_obj[xy] = CellState.wall
@@ -827,7 +831,7 @@ class SokobanTrace:
 
     @staticmethod
     def generate(
-        width: int, height: int, num_walls: int, num_boxes: int
+        width: int, height: int, num_walls: int, num_boxes: int, seed: int | None = None
     ) -> "SokobanTrace":
         """Trows an AStarCannotSolveTaskException if generated level cannot
         be solved.
@@ -837,11 +841,12 @@ class SokobanTrace:
             height (int): Height of level (including boundary)
             num_walls (int): Number of wall cells in level (excluding boundary)
             num_boxes (int): Number of boxes in level
+            seed (int | None, optional): Random seed for reproducibility. Defaults to None.
 
         Returns:
             SokobanTrace: Trace object.
         """
-        sokoban_start = generate_level(width, height, num_walls, num_boxes)
+        sokoban_start = generate_level(width, height, num_walls, num_boxes, seed=seed)
         trace = astar(AStarSokobanState(sokoban_start, deterministic=False))
         return SokobanTrace(sokoban_start, list(trace))
 
@@ -897,6 +902,8 @@ class SokobanTraceDataset:
         height: int,
         num_walls: int,
         num_boxes: int,
+        task_id: int | None = None,
+        rank: int = 0,
     ) -> int:
         """Randomly generates Sokoban task and adds trace into dataset.
 
@@ -907,18 +914,26 @@ class SokobanTraceDataset:
             height (int): Level height.
             num_walls (int): Number of wall cells.
             num_boxes (int): Number of boxes.
+            task_id (int | None, optional): Unique task identifier for seeding. Defaults to None.
+            rank (int, optional): Worker rank for parallel generation. Defaults to 0.
 
         Returns:
             int: Number of generated tasks. 1 if task was successfully added,
                 0 if not task was added (either because the sampled task is
                 not solvable or because it already exists in the dataset).
         """
+        # Create unique seed from task_id and rank for parallel generation
+        seed = None
+        if task_id is not None:
+            seed = task_id * 10000 + rank
+        
         try:
             trace = SokobanTrace.generate(
                 width=width,
                 height=height,
                 num_walls=num_walls,
                 num_boxes=num_boxes,
+                seed=seed,
             )
         except AStarCannotSolveTaskException:
             return 0
@@ -1007,6 +1022,13 @@ def generation_args_to_name(
     default="",
     help="Optional suffix to append to dataset name (e.g., '-grpo')",
 )
+@click.option("--rank", type=int, default=0, help="Worker id for parallel generation")
+@click.option(
+    "--world-size",
+    type=int,
+    default=1,
+    help="Total number of workers for parallel generation",
+)
 def generate(
     width: int,
     height: int,
@@ -1016,8 +1038,14 @@ def generate(
     test_only: bool,
     train_only: bool,
     dataset_suffix: str,
+    rank: int,
+    world_size: int,
 ):
-    """Generate Sokoban tasks and insert A* execution traces into MongoDB."""
+    """Generate Sokoban tasks and insert A* execution traces into MongoDB.
+    
+    Supports parallel generation across multiple workers. Each worker generates
+    a subset of the total samples using unique seeds based on rank.
+    """
     if test_only and train_only:
         raise ValueError("Cannot set both --test-only and --train-only flags")
     
@@ -1030,25 +1058,51 @@ def generate(
     if dataset_suffix:
         name = f"{name}{dataset_suffix}"
     dataset = SokobanTraceDataset(name)
+    
+    # Calculate samples per worker
+    samples_per_worker = num_samples // world_size
+    start_task_id = rank * samples_per_worker
+    end_task_id = start_task_id + samples_per_worker
+    
+    # Last worker handles remainder
+    if rank == world_size - 1:
+        end_task_id = start_task_id + samples_per_worker + (num_samples % world_size)
+    
+    total_for_worker = end_task_id - start_task_id
+    logging.info(
+        f"Worker {rank}/{world_size}: generating {total_for_worker} samples "
+        f"(task_ids {start_task_id} to {end_task_id - 1})"
+    )
+    
     samples_stored = 0
-    while samples_stored < num_samples:
+    for task_id in range(start_task_id, end_task_id):
         if test_only:
             is_test = True
         elif train_only:
             is_test = False
-        elif samples_stored < 9 * num_samples // 10:
+        elif task_id < 9 * num_samples // 10:
             is_test = False
         else:
             is_test = True
+        
         samples_stored += dataset.generate(
             is_test=is_test,
             width=width,
             height=height,
             num_walls=num_walls,
             num_boxes=num_boxes,
+            task_id=task_id,
+            rank=rank,
         )
-        logging.info(f"Generated {samples_stored} samples.")
-    logging.info("Done.")
+        
+        if (task_id - start_task_id + 1) % 100 == 0:
+            logging.info(
+                f"Worker {rank}: {task_id - start_task_id + 1}/{total_for_worker} "
+                f"tasks processed, {samples_stored} samples stored"
+            )
+    
+    logging.info(f"Worker {rank} done: stored {samples_stored}/{total_for_worker} samples.")
+
 
 
 class SimpleSokobanTokenizer(Tokenizer):
